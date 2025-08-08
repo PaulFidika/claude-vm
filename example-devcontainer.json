@@ -1,0 +1,160 @@
+{
+  "name": "Claude Development Environment",
+  "image": "ghcr.io/thevibeworks/claude-code-yolo:latest",
+  
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.11",
+      "installJupyterlab": true,
+      "installTools": true
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20",
+      "nodeGypDependencies": true
+    },
+    "ghcr.io/devcontainers/features/rust:1": {
+      "version": "latest",
+      "profile": "default"
+    },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "moby": true,
+      "dockerDashComposeVersion": "v2"
+    },
+    "ghcr.io/devcontainers/features/git-lfs:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+
+  "containerEnv": {
+    "CLAUDE_DANGEROUS_SKIP_PERMISSIONS": "true",
+    "CLAUDE_MODEL": "${localEnv:CLAUDE_MODEL:claude-3-opus-20240229}",
+    "TZ": "${localEnv:TZ:UTC}",
+    "PYTHONUNBUFFERED": "1",
+    "NODE_ENV": "development"
+  },
+
+  "mounts": [
+    {
+      "source": "claude-vm-cache",
+      "target": "/home/vscode/.cache",
+      "type": "volume"
+    },
+    {
+      "source": "${localEnv:HOME}/.ssh",
+      "target": "/home/vscode/.ssh",
+      "type": "bind",
+      "readonly": true
+    },
+    {
+      "source": "${localEnv:HOME}/.config/gh",
+      "target": "/home/vscode/.config/gh",
+      "type": "bind",
+      "readonly": true
+    }
+  ],
+
+  "forwardPorts": [3000, 5173, 8000, 8080, 5432, 6379, 9229],
+  
+  "portsAttributes": {
+    "3000": {
+      "label": "Application",
+      "onAutoForward": "notify",
+      "elevateIfNeeded": false
+    },
+    "9229": {
+      "label": "Node Debug",
+      "onAutoForward": "ignore",
+      "requireLocalPort": true
+    }
+  },
+
+  "onCreateCommand": {
+    "install-global-tools": "npm install -g pnpm yarn @anthropic/claude-cli",
+    "configure-git": "git config --global --add safe.directory ${containerWorkspaceFolder}"
+  },
+  
+  "updateContentCommand": {
+    "install-deps": "if [ -f package.json ]; then npm ci || npm install; fi",
+    "install-python": "if [ -f requirements.txt ]; then pip install -r requirements.txt; fi"
+  },
+  
+  "postStartCommand": {
+    "claude-health": "claude --version || echo 'Claude CLI not available'",
+    "show-context": "echo 'Workspace: ${containerWorkspaceFolder}' && pwd && ls -la"
+  },
+
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "zsh",
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "editor.formatOnSave": true,
+        "files.watcherExclude": {
+          "**/.git/objects/**": true,
+          "**/.git/subtree-cache/**": true,
+          "**/node_modules/**": true,
+          "**/.next/**": true,
+          "**/__pycache__/**": true
+        }
+      },
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "rust-lang.rust-analyzer",
+        "vadimcn.vscode-lldb",
+        "mutantdino.resourcemonitor"
+      ]
+    },
+    
+    "claude-vm": {
+      "provider": "fly.io",
+      "region": "${localEnv:CLAUDE_VM_REGION:iad}",
+      "machine": {
+        "cpu": 4,
+        "memory": "8GB",
+        "disk": "50GB"
+      },
+      "persistence": {
+        "enabled": true,
+        "strategy": "volume",
+        "snapshot": "daily"
+      },
+      "networking": {
+        "ipv6": true,
+        "exposedPorts": "auto"
+      },
+      "execution": {
+        "idleTimeout": "30m",
+        "maxRuntime": "24h",
+        "autoShutdown": true
+      },
+      "git": {
+        "strategy": "worktree",
+        "syncMode": "remote-primary",
+        "credentials": "inherit"
+      }
+    }
+  },
+
+  "remoteUser": "vscode",
+  "containerUser": "vscode",
+  
+  "runArgs": [
+    "--cap-add=SYS_PTRACE",
+    "--security-opt",
+    "seccomp=unconfined",
+    "--privileged",
+    "--init"
+  ],
+
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "8gb",
+    "storage": "50gb"
+  },
+
+  "workspaceFolder": "/workspace",
+  "waitFor": "onCreateCommand"
+}
