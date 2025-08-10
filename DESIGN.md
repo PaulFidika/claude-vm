@@ -11,9 +11,45 @@ We need to deal with two separate problems:
 2. allocating work within the dev-environments, along with collecting results
 
 
-### Design and Monetization
+### Design
 
-Should the user be operating at the workspace level, or the task level? Probably the task level (which is more abstract), with the option to manage workspaces as needed. For simplicity, we will have a rule of `one coding agent + task per workspace`. We want to be a _task orchestrator_ (new), not a _workspace orchestrator_ (like DevPod).
+What level of abstraction should we be working at? Levels:
+- Project-level artifacts (code, documentation, binaries)
+- Workspace
+- Task
+- Conversation history
+
+A 'task' is not well-defined here. It could be (1) just some random text I type into a webUI chatbox, (2) an open GitHub issue, (3) a collection of checklist items in a markdown file. We do not want to be opinionated and say 'this is what a task MUST BE!'. Ideally, our API should be able to hook into many different task-types; we'll probably create our own task-layer later, but it will hook into our workspace-management layer.
+
+In the 'ideal dev setup' every task would get its own branch / workspace, and then we'd use git to merge them all together. I don't really like this though; (1) some users might not be using git (i.e., write a research paper, produce a bunch of PDFs), (2) if we have a dozen linearly dependent tasks, we need a dozen branches, PRs, and environments.
+
+The only assumptions we will make are:
+- Every workspace has one project; a project may have many workspaces
+- Every workspace has 0 or more converational histories; every conversational history has only one workspace
+
+This assumption is not limiting; if we want a chat to span multiple workspaces, we can always output project-level artificats (claude memory) that can be used in other workspaces / conversations.
+
+```text
+                     ┌───────────────────────────────────────────────────────────────┐
+                     │         🔵 PROJECT: ecommerce-app (single repo)               │
+                     │                                                               │
+   ┌─────────────────│─────┐            ┌─────────────────┐            ┌─────────────│─────┐
+   │  🟣 WORKSPACE:        │            │  🟣 WORKSPACE:  │            │  🟣 WORKSPACE:    │
+   │    branch: auth       │            │    branch: dev  │            │    branch: dev    │
+   │                       │            │                 │            │                   │
+   │  ⚪ Claude: JWT setup │            │  ⚪ Claude:     │            │  ⚪ Claude:       │
+   │  ⚪ Claude: login UI  │            │    cart UI      │            │    stripe setup   │
+   │                       │            │  ⚪ Claude:     │            │  ⚪ Claude:       │
+   │                       │            │    validation   │            │    webhook handler│
+   │                       │            │                 │            │                   │
+   └───────────────────────┘            └─────────────────┘            └───────────────────┘
+                     │                                                               │
+                     └───────────────────────────────────────────────────────────────┘
+```
+
+
+
+### Monetization
 
 Probably the best bet is (1) an open-source self-hosted tool anyone can use, and then (2) a hosted "premium" solution we can sell to enterprises. This is how DevPod works.
 
@@ -35,10 +71,10 @@ User scope:
 
 Our scope:
 - Adding Agent to Devcontainer: adding a secure version of Claude Code, or other coding agents, to the user's provided devcontainer spec. The agent should have maximum permissions, but the user's code, secrets, and machine should be kept safe.
-- Provider Orchestration: launching containers + volumes on local or remote providers
-- Task Lifecycle: giving tasks to workspaces, keeping track of progress (Claude Code Logs), recording results in S3.
-- Workspace Lifecycle: stopping containers when the task is complete.
-- UI: mobile UI + remote VSCode for supervising / talking to claude. Terminal (ssh) access to workspace.
+- Agent Lifecycle: providing the user with input / output to the remote agent, keeping track of file changes, persisting changes.
+- Provider Orchestration: launching containers + volumes on local or remote providers.
+- Workspace Lifecycle: stopping containers when the task is complete so they don't consume resources.
+- UI: mobile UI + remote VSCode + terminal (ssh) for supervising claude and viewing the workspace.
 
 Provider scope:
 - Infrastructure lifecycle (VM, network)
@@ -51,7 +87,7 @@ Provider scope:
 - Takes about 60 seconds to startup the container again; runs a bunch of installs, meaning the dev environment (like node_modules) is not being cached; only file changes are.
 - Does not support queued-messages yet. You literally cannot talk to it while it's working; you have to wait for it to finish.
 - For each session it really only stores whatever file chanes are tracked in git. Non-git changes are not tracked or displayed.
-- Honestly this tool sucks and is barely functional.
+- Honestly this tool sucks and is barely functional. I can't believe a billion-dollar company made this.
 
 ---
 
@@ -71,7 +107,7 @@ The main point is to allow you to use Claude Code outside of the CLI.
 
 ### Claude Code Containers:
 
-The maint point of these is to make it easier to run claude-code with the --dangerously-skip-permissions flag, so you do not need to manually approve stuff. Running claude code in a container, with its own copy of the code, means that claude cannot destroy the codebase (or your computer) easily. Another concern is exfiltration / prompt injection hacks caused by rogue websites.
+The maint point of these is to make it easier to run claude-code with the --dangerously-skip-permissions flag, so you do not need to manually approve stuff. Running claude code in a container, with its own copy of the code, means that claude cannot destroy the codebase (or your computer!) easily. A still-valid concern is prompt injection hacks caused by rogue websites that can exfiltrate your code or env-secrets.
 
 Containers:
 - RchGrav/claudebox: sounds the most promising
@@ -106,6 +142,16 @@ People building similar projects to us.
 wbopan/cui: could be used as our frontend
 dtormoen/task: copy some of its design?
 
+---
+
+### User Interactions
+
+- VSCode connects into the workspace; users can review file changes and perform changes (write git commit, ask Claude to make changes, make changes manually, etc). Unfortunately VSCode is not good at switching between environments (no multi-tab view).
+- Users can SSH into the workspace, and talk to Claude and issue commands. Unfortunately it's hard to view file changes from the CLI. (Lazygit might work? Some terminal UI?)
+- Our WebUI can fill the gap; users can review files, talk to Claude, and issue shell commands.
+
+---
+
 ### Marketing:
 
 - Submit commits to the 2 main claude-awesome repos to have our project listed as well
@@ -120,49 +166,107 @@ https://github.com/jqueryscript/awesome-claude-code
 
 ---
 
-## CLI Design
+## CLI Design (Alternative)
 
 ```bash
 claude-vm - Run Claude Code on remote VMs
 
 USAGE:
-  claude-vm [command] [options]
+  claude-vm <command> [options]
 
-COMMANDS:
-  up [repo-url|path]        Create and start a new workspace (with or without a devcontainer.json)
-  list                      List all workspaces with status
-  ssh <workspace-id>        SSH into workspace container
-  stop <workspace-id>       Stop workspace (can resume later)
-  delete <workspace-id>     Delete workspace permanently
-  web <workspace-id>        Open browser to workspace URL
+COMMAND TREE:
+├── login                                               # OAuth login to claude-vm.com account
 
-OPTIONS:
-  --provider fly|aws|docker  Cloud provider (default: docker)
-  --image <image-name>       Override container image
-  -y, --yes                  Skip confirmation prompts
-  --help, -h                 Show help
+├── provider                                           # Provider management (CRUD)
+│   ├── add <name>                                     # Add new provider
+│   │   └── --option <key=value>                       #   Set provider options
+│   │
+│   ├── list                                           # List all configured providers
+│   │   └── -v, --verbose                              #   Show all options (secrets hidden)
+│   │
+│   ├── set-options <name>                             # Update provider configuration
+│   │   └── --option <key=value>                       #   Set/update options
+│   │
+│   └── delete <name>                                  # Remove provider
+│       └── -y, --yes                                  #   Skip confirmation
 
-COMMAND-SPECIFIC FLAGS:
-  up:
-    --provider               Choose cloud provider (default: docker)
-    --image                  Override devcontainer.json image
-    --public-web             Make web interface publicly accessible
-  
-  list:
-    -l, --long               Show detailed workspace info
-  
-  delete:
-    -y, --yes                Skip deletion confirmation
+├── workspace                                           # Workspace management
+│   ├── up [workspace-id|repo-url|path/to/local-repo]   # Create and start new workspace
+│   │   ├── --provider <name>                           #   Cloud provider (fly|aws|docker)
+│   │   ├── --image <name>                              #   Override container image
+│   │   └── --branch <name>                             #   Git branch to checkout
+│   │
+│   ├── list                                  # List all workspaces 
+│   │   ├── -l, --long                        #   Show detailed workspace info
+│   │   └── --status <filter>                 #   Filter by status (running|stopped|error)
+│   │
+│   ├── down <workspace-id>                   # Stop workspace (can resume later)  
+│   │   └── -f, --force                       #   Force stop without graceful shutdown
+│   │
+│   └── delete <workspace-id>                 # Delete provider resource, keep S3 backup
+│       ├── -y, --yes                         #   Skip confirmation prompt
+│       └── --purge                           #   Delete provider resource AND S3 backup
+│
+├── ssh <workspace-id>                        # SSH into workspace container
+│   ├── --user <name>                         #   SSH username (default: current user)
+│   └── -p, --port <port>                     #   SSH port (default: 22)
+│
+├── web                                       # Open web interface (you can pick between all workspaces)
+│
+├── chat                                      # Talk to coding agents
+│   ├── -w, --workspace <workspace-id>        #   Interactive: list/select conversations in workspace
+│   └── -c, --conversation <conversation-id>  #   Direct: connect to specific conversation
+│
+└── new-chat <workspace-id>                   # Create new conversation with coding agent
+    └── --agent <name>                        #   Coding agent: claude, qwen, codex, goose (default: claude)
 
 EXAMPLES:
-  claude-vm up github.com/user/repo       # Create a remote workspace from a GitHub repo
-  claude-vm up .                          # Create a renite workspace from the current directory
-  claude-vm up --provider local           # Use local Docker container instead of a remote workspace
-  claude-vm ssh abc123                    # SSH into workspace abc123
-  claude-vm web abc123                    # View the workspace abc123 in a web browser (https://abc123.fly.io)
+  # Provider management
+  claude-vm provider add digitalocean         # Interactive setup
+  claude-vm provider add fly \
+    --option token=fo1_xxx \
+    --option organization=my-org
+  claude-vm provider list                     # Show all providers
+  claude-vm provider list -v                  # Show with options (secrets hidden)
+  claude-vm provider set-options digitalocean \
+    --option region=sfo3 \
+    --option droplet_size=s-4vcpu-8gb
+  claude-vm provider delete aws               # Remove AWS provider
+  
+  # Workspace management
+  claude-vm workspace up bold-fire-1234       # restarts an existing workspace on fly.io
+  claude-vm workspace up . --image python:3.11
+  claude-vm workspace list --status running --long
+  claude-vm workspace down 3f2504e0bb11        # Stop workspace, preserve state
+  claude-vm workspace up 3f2504e0bb11          # Resume stopped workspace
+  claude-vm workspace delete 45678901 --yes
+  claude-vm workspace delete quiet-lake-5678 --purge    # Complete deletion including S3 backup
+  
+  # SSH access
+  claude-vm ssh quiet-lake-5678 --user developer
+  claude-vm ssh 8a9b2c3d4e5f --port 2222
+  
+  # Web interface
+  claude-vm web                                # Open web interface (pick between workspaces)
+  
+  # Chat with coding agents
+  claude-vm chat                               # Interactive: pick workspace → pick conversation
+  claude-vm chat -w bold-fire-1234             # Interactive: pick conversation in workspace bold-fire-1234
+  claude-vm chat -c conv-456                   # Direct: connect to conversation conv-456
+  
+  # Create new conversations
+  claude-vm new-chat 3f2504e0bb11              # Create new conversation with default claude agent
+  claude-vm new-chat 87654321 --agent qwen     # Create new conversation with qwen agent
+
+GLOBAL OPTIONS:
+  --provider fly|aws|docker     # Default cloud provider
+  --config <file>               # Config file path
+  --help, -h                    # Show help
 ```
 
 ---
+
+
 
 ### Volume Persistence
 
@@ -210,13 +314,71 @@ How does clauce-vm run it's `list` command? We can store local files on the dev'
 
 ### Building Devcontainer
 
-*Parsing Devcontainer.json:*
-- Devpod can parse these container specs, but can also work without them by looking through the codebase.
-- A user-supplied devcontainer.json spec should be optional.
+*Parsing User's Devcontainer.json:*
+- Users should supply a devcontainer.json optionally, but we should also be able to generate a good starter image by parsing the repo.
 
-*Adding Coding Agent into Devcontainer:*
-- (For now, we can just use the official devcontainer feature, but we may want to build something more secure / custom.)
-- (For now, we can just support Claude Code, but in the future we will want to suppor other agents.)
+*Inserting Processes into Devcontainer:*
+
+**Agent Installation via Devcontainer Features:**
+```json
+// Generated devcontainer.json based on config.yaml
+{
+  "name": "claude-vm-workspace",
+  "image": "mcr.microsoft.com/devcontainers/universal:2-linux",
+  "features": {
+    // Install all enabled agents from config
+    "ghcr.io/anthropics/devcontainer-features/claude-code:latest": {},
+    "ghcr.io/qwen/devcontainer-features/qwen-coder:latest": {},
+    "ghcr.io/openai/devcontainer-features/codex:latest": {},
+    "ghcr.io/goose-ai/devcontainer-features/goose:latest": {},
+    "ghcr.io/google/devcontainer-features/gemini:latest": {},
+    
+    // Our custom feature for workspace management
+    "ghcr.io/claude-vm/devcontainer-features/workspace-manager:latest": {
+      "defaultAgent": "claude",
+      "enabledAgents": ["claude", "qwen", "codex", "goose", "gemini"],
+      "workspaceId": "${localEnv:WORKSPACE_ID}"
+    }
+  }
+}
+```
+
+**How Multi-Agent Installation Works:**
+
+1. **Config-driven**: User's `config.yaml` lists all desired agents:
+   ```yaml
+   agents:
+     enabled: [claude, qwen, codex, goose, gemini]
+     defaults:
+       agent: claude  # Default for new-chat
+   ```
+
+2. **Parallel Installation**: All agents installed via devcontainer features:
+   - Each agent gets its own binary/runtime
+   - Credentials injected as environment variables
+   - No conflicts between agents
+
+3. **Runtime Selection**: User can switch agents anytime:
+   ```bash
+   claude-vm new-chat workspace-123           # Uses default (claude)
+   claude-vm new-chat workspace-123 --agent qwen     # Use Qwen
+   claude-vm new-chat workspace-123 --agent gemini   # Use Gemini
+   ```
+
+4. **Credential Injection**: Each agent gets its own auth:
+   ```bash
+   CLAUDE_CREDENTIALS=/workspace/.claude/.credentials.json
+   OPENAI_API_KEY=sk-xxx        # For codex
+   GOOGLE_API_KEY=xxx            # For gemini
+   QWEN_API_KEY=xxx              # For qwen
+   GOOSE_API_KEY=xxx             # For goose
+   ```
+
+5. **Benefits**:
+   - **Compare models**: Test same task across different agents
+   - **Fallback options**: If one agent fails, try another
+   - **Specialized tasks**: Use best agent for specific jobs
+   - **Cost optimization**: Use cheaper models when appropriate
 
 ### Provider Orchestration
 
@@ -235,11 +397,36 @@ Container:
 API Server:
 - (needs to be specified)
 
-Workspace Server:
-- 
+Centralized Task Server:
+- (needs to be specified)
 
+S3 Storage:
+- (needs to be specified)
 
+Security:
+- (how do we allow ourselves to login while protecting against others?)
 
+### Workspace Lifecycle
+
+- How long to keep containers alive after claude?
+
+(???)
+
+### Web UI
+
+(???)
+
+---
+
+### Task Specification
+
+(open issue)
+
+### Code Review
+
+(open issue)
+
+---
 
 ### Future Work
 
