@@ -1,12 +1,15 @@
 ## Configuration
 
-claude-vm stores all configuration in a single YAML file with secrets in the OS keychain.
+claude-vm uses a simple split-file approach: user preferences in YAML, workspace registry in JSON, secrets in OS keychain.
 
 ### Storage Locations
 
 ```bash
-# Configuration (non-secrets)
+# User preferences (non-secrets)
 ~/.claude-vm/config.yaml
+
+# Workspace registry (managed by CLI)
+~/.claude-vm/workspaces.yaml
 
 # Secrets (OS keychain)
 macOS: Keychain Access
@@ -753,121 +756,91 @@ claude-vm.openrouter.api_key     # API key for OpenRouter provider
 
 ---
 
-### Config File Format
+### File Format Documentation
+
+#### ~/.claude-vm/config.yaml (User Preferences)
 
 ```yaml
-# ~/.claude-vm/config.yaml
+# ~/.claude-vm/config.yaml 
 # IMPORTANT: This file contains NO secrets - all secrets are stored in OS keychain
+# PHILOSOPHY: Only store what the user explicitly configures (no defaults)
 
-# Default settings
+# Default settings (always present)
 defaults:
-  cloud: "docker"                 # Default cloud platform: docker, fly, aws, digitalocean
-  agent: "claude"                  # Default coding agent for new-chat
+  cloud: "docker"                    # Default cloud: docker, fly, aws, digitalocean  
+  agent: "claude"                    # Default agent for new conversations
+  auto_stop_minutes: 60              # Auto-stop idle workspaces
 
-# Cloud platform configuration (non-secrets only)
+# Cloud platform settings (only configured clouds with non-default settings)
 clouds:
-  docker:
-    # No configuration needed - uses local Docker daemon
-    
   digitalocean:
-    region: "nyc1"                 # Default region
-    size: "s-2vcpu-8gb"           # Default machine size
-    # API key stored in keychain: claude-vm.digitalocean.api_key
+    region: "nyc1"                   # Override default region
+    size: "s-4vcpu-8gb"             # Override default size
+    # API key stored in keychain: claude-vm.cloud.digitalocean.api_key
     
   fly:
-    region: "iad"                  # Default region  
-    size: "shared-cpu-2x@2048"     # Default machine size
-    # API key stored in keychain: claude-vm.fly.api_key
-    
-  aws:
-    region: "us-east-1"            # Default region
-    instance_type: "t3.medium"     # Default instance type
-    # Access keys stored in keychain: 
-    # - claude-vm.aws.access_key_id
-    # - claude-vm.aws.secret_access_key
+    region: "lax"                    # Override default region
+    # API key stored in keychain: claude-vm.cloud.fly.api_key
 
-  google:
-    project: ""                    # Optional GCP project for VM hosting
-    region: "us-central1"          # Default region for Compute Engine
-    # Credentials stored in keychain:
-    # - claude-vm.google.gcp_credentials (JSON service account key)
-
-# LLM API provider configuration (non-secrets only)  
+# LLM provider settings (only configured providers with non-default settings)
 providers:
-  anthropic:
-    # Credentials stored in keychain:
-    # - claude-vm.anthropic.api_key (API key authentication)
-    # - claude-vm.anthropic.oauth_token (OAuth JSON token - preferred by claude)
-    
   openai:
-    organization: ""               # Optional org ID
-    # Credentials stored in keychain:
-    # - claude-vm.openai.api_key (API key authentication)
-    # - claude-vm.openai.oauth_token (OAuth JSON token - preferred by codex)
+    organization: "org-123"          # Optional org ID
+    # API key stored in keychain: claude-vm.provider.openai.api_key
     
   google:
-    project: ""                    # Optional GCP project for AI APIs
-    # Credentials stored in keychain:
-    # - claude-vm.google.api_key (API key for Gemini)
-    
-  alibaba:
-    # Credentials stored in keychain:
-    # - claude-vm.alibaba.api_key (DashScope API key for qwen)
-    
-  groq:
-    # Credentials stored in keychain:
-    # - claude-vm.groq.api_key (Groq API key)
+    project: "my-gcp-project"        # Optional GCP project
+    # API key stored in keychain: claude-vm.provider.google.api_key
 
-# Agent configuration (agents use their provider's credentials)
-# NOTE: All agents support --option key=value pattern for flexible configuration
+# Agent settings (only agents with non-default configuration)
 agents:
   claude:
-    provider: "anthropic"          # Uses anthropic provider credentials
-    model: "sonnet"                # opus, sonnet, haiku
-    auth_preference: "oauth"       # oauth, api-key (prefers OAuth)
-    temperature: 0.7               # 0.0-2.0 (default for all agents)
-    
-  codex:
-    provider: "openai"             # Uses openai provider credentials
-    model: "gpt-4o"                # gpt-4o, gpt-4-turbo, o1-mini, o1-preview
-    auth_preference: "oauth"       # oauth, api-key (prefers OAuth/ChatGPT login)
-    temperature: 0.7               # 0.0-2.0
-    organization: ""               # Optional OpenAI org ID
-    
-  qwen:
-    provider: "alibaba"            # Uses alibaba provider credentials
-    model: "qwen3-coder-plus"     # qwen3-coder-plus, qwen-coder-32b, qwen-coder-7b
-    temperature: 0.7               # 0.0-2.0
-    base_url: ""                   # Custom API endpoint (optional)
-    max_tokens: 4096               # Maximum response tokens (optional)
+    model: "opus"                    # Override default model
+    temperature: 0.8                 # Override default temperature
     
   goose:
-    provider: "anthropic"          # anthropic, openai, google, groq, databricks, openrouter
-    model: "claude-3.5-sonnet"     # Provider-specific model name
-    planner_provider: ""           # Separate provider for planning tasks (optional)
-    planner_model: ""              # Model for planning tasks (optional)
-    temperature: 0.7               # 0.0-2.0
-    max_turns: 1000                # Maximum conversation turns
-    
-  gemini:
-    provider: "google"             # Uses google provider credentials
-    model: "gemini-2.5-pro"        # gemini-2.5-pro, gemini-2.0-flash, gemini-1.5-pro
-    temperature: 0.7               # 0.0-2.0 (standardized default)
-    thinking_budget: 1024          # Tokens for reasoning (Gemini 2.5+)
-    max_output_tokens: 8192        # Maximum response tokens (optional)
-    safety_settings: "default"     # Content safety level (optional)
+    provider: "openai"               # Use non-default provider
+    model: "gpt-4o"                  # Provider-specific model
 
-# Storage configuration (S3-compatible)
+# S3 backup storage (only if configured)
 storage:
-  endpoint: "https://r2.cloudflarestorage.com"  # S3 endpoint
-  bucket: "claude-vm-backups"                   # Bucket name
+  endpoint: "https://s3.amazonaws.com"
+  bucket: "my-claude-vm-backups"
   # Access keys stored in keychain:
-  # - claude-vm.storage.access_key_id
+  # - claude-vm.storage.access_key_id  
   # - claude-vm.storage.secret_access_key
+```
 
-# Workspace defaults
-workspace:
-  auto_stop_minutes: 60            # Stop workspace after idle time
+#### ~/.claude-vm/workspaces.yaml (Workspace Registry)
+
+```yaml
+version: "1.0"
+last_updated: "2025-08-11T08:22:11Z"
+
+workspaces:
+  bold-fire-1234:
+    name: "bold-fire-1234"
+    status: "running"
+    provider: "fly"
+    region: "iad"
+    url: "https://bold-fire-1234.fly.dev"
+    ssh_host: "bold-fire-1234.fly.dev"
+    agents: ["claude", "goose"]
+    created: "2025-08-11T04:13:07Z"
+    last_activity: "2025-08-11T08:22:11Z"
+    project:
+      repo: "github.com/user/project"
+      branch: "main"
+      path: "/workspace"
+      
+  quiet-lake-5678:
+    name: "quiet-lake-5678"
+    status: "stopped"
+    provider: "digitalocean"
+    region: "nyc1"
+    agents: ["claude"]
+    created: "2025-08-10T14:22:11Z"
+    last_activity: "2025-08-10T16:33:55Z"
 ```
 
 **Keychain Storage Pattern:**

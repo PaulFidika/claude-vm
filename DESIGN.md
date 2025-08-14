@@ -70,11 +70,11 @@ User scope:
 - Source Code Review: which changes should be committed?
 
 Our scope:
-- Adding Agent to Devcontainer: adding a secure version of Claude Code, or other coding agents, to the user's provided devcontainer spec. The agent should have maximum permissions, but the user's code, secrets, and machine should be kept safe.
+- Agent Installation in Devcontainer: installing coding agents (Claude Code, Goose, etc.) inside devcontainers with full development capabilities. Multiple agents can run within the same devcontainer environment.
 - Agent Lifecycle: providing the user with input / output to the remote agent, keeping track of file changes, persisting changes.
-- Provider Orchestration: launching containers + volumes on local or remote providers.
-- Workspace Lifecycle: stopping containers when the task is complete so they don't consume resources.
-- UI: mobile UI + remote VSCode + terminal (ssh) for supervising claude and viewing the workspace.
+- Provider Orchestration: launching VMs (droplets/machines/instances) + volumes on local or remote providers, then creating devcontainers with agents inside.
+- Workspace Lifecycle: stopping VMs when the task is complete so they don't consume resources.
+- UI: mobile UI + remote VSCode + terminal (devcontainer shell) for supervising claude and viewing the workspace.
 
 Provider scope:
 - Infrastructure lifecycle (VM, network)
@@ -83,8 +83,8 @@ Provider scope:
 ---
 
 ### OpenAI Codex notes:
-- Turns off the container immediately after the task is completed, meaning the continaer needs to be started up again for every user-interaction.
-- Takes about 60 seconds to startup the container again; runs a bunch of installs, meaning the dev environment (like node_modules) is not being cached; only file changes are.
+- Turns off the execution environment immediately after the task is completed, meaning the environment needs to be started up again for every user-interaction.
+- Takes about 60 seconds to startup the environment again; runs a bunch of installs, meaning the dev environment (like node_modules) is not being cached; only file changes are.
 - Does not support queued-messages yet. You literally cannot talk to it while it's working; you have to wait for it to finish.
 - For each session it really only stores whatever file chanes are tracked in git. Non-git changes are not tracked or displayed.
 - Honestly this tool sucks and is barely functional. I can't believe a billion-dollar company made this.
@@ -107,7 +107,7 @@ The main point is to allow you to use Claude Code outside of the CLI.
 
 ### Claude Code Containers:
 
-The maint point of these is to make it easier to run claude-code with the --dangerously-skip-permissions flag, so you do not need to manually approve stuff. Running claude code in a container, with its own copy of the code, means that claude cannot destroy the codebase (or your computer!) easily. A still-valid concern is prompt injection hacks caused by rogue websites that can exfiltrate your code or env-secrets.
+The main point of these is to make it easier to run claude-code with the --dangerously-skip-permissions flag, so you do not need to manually approve stuff. Running claude code in a devcontainer provides strong security isolation: Claude cannot destroy your host system, and critically, Claude cannot access sensitive credentials (GitHub keys, S3 credentials, cloud provider tokens) which are stored only at the VM level. Even if Claude is compromised via prompt injection, the blast radius is limited to the development sandbox.
 
 Containers:
 - RchGrav/claudebox: sounds the most promising
@@ -136,6 +136,18 @@ People building similar projects to us.
 - superagent-ai/vibekit: 1k stars: Written in Typescript. Intercepts Claude's commands and runs them inside of a local or remote container. Claude runs outside of the container (on the host machine) not inside of it. It's like a transparent virtualization layer; dangerous stuff happens inside the containers. Unlike dagger's container-use, this is not an MCP-server.
 
 - parruda/claude-swarm: 1k stars; written in Ruby????. Over-engineered garbage; basically just an MCP server so multiple claude instances running on the same machine can talk to each other.
+
+- daytonaio/daytona: 21k stars; written in Typescript + Go (for some reason). An over-engineered way of running arbitrary code in a container safely. Basically you have CLI -> API-server (Typescript) -> running (Go) -> container that executes code. They raised $7 million. They mostly want you to use their hosted-service since it's complex to self-host. Charges $0.46 for a 4 CPU, 16 GB instance per hour, which is a 2x markup compared to Digital Ocean / fly.io ($0.22 and $0.29 respectively); bare-metal you can rent this for $0.10 per hour.
+
+### OpenAI Agent Mode
+
+- Launches containers using a setting like `{"type":"code_interpreter","container":{"type":"auto","file_ids":[]}}`. This indicates that it can start up a container, and mount a selected set of files. It specifies this using a manifest (list of files).
+- Agent mode takes about ~5 seconds to boot up its container
+- Containers are useful for tasks that require state. An LLM's text-browser, or calls to python code-interpreter are stateless (i.e., here is a query, give me text of results, here is a URL, give me text on page, here is python code, run it and give me result), but stateful workflows require a container. Exmaples (other than coding):
+  - Login state
+  - Browser-navigation state on SPAs (visual browser)
+  - File aggregation (i.e., download 3 PDFs and put them together into a single PDF)
+  - Multi-file steps (i.e., create a chart, then place that chart in a PowerPoint presentation)
 
 ### Tools That Are The Most Useful:
 
@@ -176,11 +188,13 @@ USAGE:
 
 COMMAND TREE:
 ├── login                                               # OAuth login to claude-vm.com account
+├── logout                                              # Logout from SaaS
 │
 ├── workspace                                           # Workspace management
 │   ├── up [workspace-id|repo-url|path/to/local-repo]   # Create and start new workspace
-│   │   ├── --cloud <name>                              #   Cloud platform (docker|digitalocean|fly|aws)
+│   │   ├── --cloud <name>                              #   Cloud platform (docker|digitalocean|fly|aws) - uses VM services: droplets/machines/ec2
 │   │   ├── --agent <name>                              #   Agents to include (claude|codex|qwen|goose|gemini)
+│   │   ├── --credentials <list>                        #   Credentials to include (comma-separated)
 │   │   ├── --devcontainer <path>                       #   DevContainer spec (takes priority over --image)
 │   │   ├── --image <name>                              #   Docker image override (fallback)
 │   │   ├── --region <region>                           #   Cloud region (optional)
@@ -190,7 +204,10 @@ COMMAND TREE:
 │   │
 │   ├── list                                  # List all workspaces 
 │   │   ├── -l, --long                        #   Show detailed workspace info
-│   │   └── --status <filter>                 #   Filter by status (running|stopped|error)
+│   │   ├── --status <filter>                 #   Filter by status (running|stopped|error)
+│   │   └── --json                            #   Output in JSON format
+│   │
+│   ├── token <workspace-id>                  # Generate JWT for workspace access
 │   │
 │   ├── down <workspace-id>                   # Stop workspace (can resume later)  
 │   │   └── -f, --force                       #   Force stop without graceful shutdown
@@ -199,9 +216,7 @@ COMMAND TREE:
 │       ├── -y, --yes                         #   Skip confirmation prompt
 │       └── --purge                           #   Delete provider resource AND S3 backup
 │
-├── ssh <workspace-id>                        # SSH into workspace container
-│   ├── --user <name>                         #   SSH username (default: current user)
-│   └── -p, --port <port>                     #   SSH port (default: 22)
+├── shell <workspace-id>                      # Open shell in workspace devcontainer
 │
 ├── chat [conversation-name]                   # Talk to coding agents (drop into named conversation)
 │   ├── -w, --workspace <workspace-id>        #   Interactive: list/select conversations in workspace  
@@ -217,19 +232,48 @@ COMMAND TREE:
 │   ├── list                                 # Show all agents with their configuration
 │   └── clear-config <agent-name>            # Clear agent configuration
 │
-├── cloud                                     # Cloud platform management
+├── cloud                                     # SYSTEM: Cloud platform management (used by claude-vm for VM provisioning)
 │   ├── set-config <cloud-name>              # Add or update cloud configuration
 │   │   └── --option <key=value>             #   Set cloud options (api-key, region, etc.)
 │   ├── list                                 # List all clouds with configuration
 │   └── clear-config <cloud-name>            # Clear all options for cloud
 │
-├── provider                                  # LLM API provider management  
+├── provider                                  # SYSTEM: LLM API provider management (used by claude-vm for agent APIs)
 │   ├── set-config <provider-name>           # Add or update provider configuration
 │   │   └── --option <key=value>             #   Set provider options (api-key, oauth-token, etc.)
 │   ├── list                                 # List all providers with configuration
 │   └── clear-config <provider-name>         # Clear all options for provider
 │
-├── web                                       # Open web interface (you can pick between all workspaces)
+├── storage                                   # SYSTEM: S3-compatible backup storage (used by claude-vm for backups)
+│   ├── set-config                           # Configure S3-compatible storage for backups
+│   │   └── --option <key=value>             #   Set storage options (endpoint, bucket, access-key-id, etc.)
+│   ├── list                                 # Show current storage configuration
+│   ├── test                                 # Test storage connection and permissions
+│   └── clear-config                         # Clear storage configuration
+│
+├── credential                               # DEVELOPMENT: Agent credential management (used by agents for development work)
+│   ├── add <name>                           # Add development credential for agents to use  
+│   │   ├── --ssh-key <path>                 #   SSH private key for git operations
+│   │   ├── --profile <name>                 #   AWS/cloud profile name
+│   │   ├── --username <user>                #   Username (for registries)
+│   │   ├── --token <token>                  #   API token or PAT
+│   │   ├── --api-key <key>                  #   API key (for services like Stripe)
+│   │   └── --connection-string <url>        #   Database connection string
+│   ├── list                                 # Show registered development credentials (keys masked)
+│   ├── remove <name>                        # Remove credential from keychain
+│   └── test <name>                          # Test credential connection
+│
+├── web                                     # Open web interface dashboard
+│   │   --port, -p <PORT>                   # Port to run on (default: 3000)
+│   │   --host <HOST>                       # Host to bind to (default: 127.0.0.1)
+│   │   --ssh-key <PATH>                    # SSH private key path (default: auto-detect)
+│   │   --config <PATH>                     # Config file path (default: ~/.claude-vm/config.yaml)
+│   │   --no-browser                        # Don't auto-open browser
+│   │   --timeout <DURATION>                # JWT expiration timeout (default: 1h)
+│   │   --auth-password <PASSWORD>          # Simple password protection
+│   │   --auth-github-org <ORG>             # Required GitHub organization
+│   │   --auth-github-teams <TEAMS>         # GitHub teams (comma-separated)
+│   │   --auth-config <PATH>                # Auth configuration file (YAML)
 
 EXAMPLES:
   # Workspace management  
@@ -237,6 +281,7 @@ EXAMPLES:
   claude-vm workspace up . --cloud digitalocean --agent claude  # DO with Claude agent only
   claude-vm workspace up . --cloud fly --agent codex,goose     # Fly with Codex + Goose agents  
   claude-vm workspace up . --agent null                       # Use default cloud, no agents in devcontainer
+  claude-vm workspace up . --credentials github,aws,stripe,pnpm  # Specify workspace credentials
   claude-vm workspace up . --devcontainer .devcontainer/ai-agents.json  # Custom devcontainer
   claude-vm workspace up . --devcontainer https://github.com/user/devcontainers/claude.json
   claude-vm workspace up . --image node:18-alpine         # Simple Docker image override
@@ -252,7 +297,7 @@ EXAMPLES:
   claude-vm workspace delete 45678901 --yes               # Delete, keep S3 backup
   claude-vm workspace delete quiet-lake-5678 --purge      # Complete deletion including S3 backup
   
-  # Cloud platform configuration
+  # SYSTEM cloud platform configuration (used by claude-vm to provision VMs)
   claude-vm cloud set-config digitalocean --option api-key=dop_xxx --option region=nyc1
   claude-vm cloud set-config fly --option api-key=fly_xxx --option region=iad
   claude-vm cloud set-config aws --option access-key=AKIA... --option secret-key=xxx
@@ -260,7 +305,7 @@ EXAMPLES:
   claude-vm cloud list                                     # Show all clouds with config
   claude-vm cloud clear-config digitalocean               # Clear DO configuration
   
-  # LLM API provider configuration
+  # SYSTEM LLM API provider configuration (used by claude-vm to power agents)
   claude-vm provider set-config anthropic --option api-key=sk-ant-xxx
   claude-vm provider set-config anthropic --option oauth-token=/path/to/token.json
   claude-vm provider set-config openai --option api-key=sk-xxx
@@ -268,6 +313,31 @@ EXAMPLES:
   claude-vm provider set-config google --option api-key=AIza-xxx
   claude-vm provider list                                  # Show all providers with config
   claude-vm provider clear-config anthropic               # Clear Anthropic configuration
+  
+  # DEVELOPMENT credentials (used by agents for development work)
+  claude-vm credential add github ~/.ssh/id_rsa          # SSH key (auto-detected) - for agent git operations
+  claude-vm credential add aws my-dev-profile             # AWS profile (auto-detected) - for agent AWS CLI usage
+  claude-vm credential add stripe sk_test_abc123          # API key → STRIPE_API_KEY - for agent API testing
+  claude-vm credential add openai sk-abc123def456         # API key → OPENAI_API_KEY - for agent OpenAI usage
+  claude-vm credential add npm ~/.npmrc                   # Config file (auto-detected) - for agent npm operations
+  claude-vm credential add pnpm ~/.npmrc                  # Config file (auto-detected) - for agent pnpm operations
+  claude-vm credential add docker myuser:dckr_pat_abc123  # Registry auth (auto-detected) - for agent docker pulls
+  
+  # Custom credential patterns for unlisted services
+  claude-vm credential add my-api --env-var MY_API_KEY=abc123
+  claude-vm credential add internal-db --proxy postgresql://host:5432/db --local-port 5432
+  
+  claude-vm credential list                               # Show registered development credentials (keys masked)  
+  claude-vm credential test github                        # Test credential connection
+  claude-vm credential remove old-credential             # Remove credential from keychain
+  
+  # S3-compatible backup storage configuration (for self-hosted users)
+  claude-vm storage set-config --option endpoint=https://s3.amazonaws.com --option bucket=my-claude-vm-backups
+  claude-vm storage set-config --option access-key-id=AKIAIOSFODNN7EXAMPLE --option secret-access-key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKEY
+  claude-vm storage set-config --option endpoint=https://r2.cloudflarestorage.com --option bucket=my-backups  # Cloudflare R2
+  claude-vm storage test                                   # Test storage connection and permissions
+  claude-vm storage list                                   # Show current storage configuration (credentials masked)
+  claude-vm storage clear-config                           # Clear storage configuration
   
   # Agent configuration (agents use their provider's credentials)
   claude-vm agent set-config claude --option model=opus --option auth_preference=oauth
@@ -278,12 +348,24 @@ EXAMPLES:
   claude-vm agent list                                           # Show all agents with config
   claude-vm agent clear-config claude                            # Clear Claude configuration
   
+  # Workspace management with JSON output
+  claude-vm workspace list                                       # List all workspaces
+  claude-vm workspace list --json                               # Export workspace registry as JSON
+  claude-vm workspace token bold-fire-1234                      # Generate JWT for workspace access
+  
+  # SaaS authentication
+  claude-vm login                                                # Login to SaaS (claude-vm.com)
+  claude-vm logout                                               # Logout from SaaS
+  
   # SSH access
   claude-vm ssh quiet-lake-5678 --user developer
   claude-vm ssh 8a9b2c3d4e5f --port 2222
   
   # Web interface
-  claude-vm web                                # Open web interface (pick between workspaces)
+  claude-vm web                                                  # Local web UI (localhost:3000)
+  claude-vm web --host 0.0.0.0 --auth-password team-secret      # Self-hosted with password
+  claude-vm web --host 0.0.0.0 --auth-github-org acme-corp     # Self-hosted with GitHub org
+  claude-vm web --host 0.0.0.0 --auth-github-org acme-corp --auth-github-teams dev,ops  # With teams
   
   # Chat with coding agents (git-like syntax) 
   claude-vm chat --new "fix-auth-bug"                     # Create new conversation (agent selected from available)
@@ -316,6 +398,57 @@ GLOBAL OPTIONS:
   --non-interactive             # Disable interactive prompts (for CI/automation)
   --help, -h                    # Show help
 ```
+
+---
+
+## Configuration Management
+
+claude-vm uses a simple split-file approach for clean separation of concerns:
+
+**Storage Locations:**
+- **User preferences**: `~/.claude-vm/config.yaml` (only configured settings, no defaults)
+- **Workspace registry**: `~/.claude-vm/workspaces.yaml` (managed by CLI)
+- **Secrets**: OS keychain (API keys, access tokens, OAuth credentials)
+
+**Keychain Storage Pattern:**
+```
+Service: claude-vm
+Account: <type>.<name>.<field>
+Password: <secret_value>
+
+Examples:
+- claude-vm.cloud.digitalocean.api_key
+- claude-vm.cloud.fly.api_key
+- claude-vm.cloud.aws.access_key_id
+- claude-vm.cloud.aws.secret_access_key
+- claude-vm.cloud.google.gcp_credentials
+- claude-vm.provider.anthropic.api_key
+- claude-vm.provider.anthropic.oauth_token
+- claude-vm.provider.openai.api_key
+- claude-vm.provider.openai.oauth_token
+- claude-vm.provider.google.api_key
+- claude-vm.provider.alibaba.api_key
+- claude-vm.provider.groq.api_key
+- claude-vm.storage.access_key_id
+- claude-vm.storage.secret_access_key
+```
+
+**Why OS Keychain:**
+- ✅ **Security**: Encrypted at rest, OS-managed access control
+- ✅ **Cross-platform**: Works on macOS, Linux (Secret Service), Windows (Credential Manager)
+- ✅ **Integration**: Same pattern used by Docker, AWS CLI, Google Cloud SDK
+- ✅ **No plaintext**: Secrets never stored in config files or environment variables
+
+**Configuration Commands:**
+All `set-config` commands automatically detect secrets vs non-secrets and store them appropriately:
+- API keys, access tokens → OS keychain  
+- Regions, sizes, model names → config.yaml
+
+**Complete Configuration Details:**
+See DESIGN_CONFIG.md for the complete file format documentation:
+- config.yaml structure (user preferences only) 
+- workspaces.yaml structure (workspace registry)
+- keychain storage patterns for all secrets
 
 ---
 
@@ -463,36 +596,9 @@ claude-vm provider set-config anthropic --option api-key=sk-ant-xxx   # Always e
 
 ## Default Agent Configuration
 
-claude-vm uses **sensible defaults** with explicit override options:
-
 **Default Behavior:**
 - **Default cloud**: `docker` (local Docker, no credentials needed)
 - **Default agent**: `claude` (most popular agent)
-
-**Workspace Creation Behavior:**
-```bash
-# Uses built-in defaults
-claude-vm workspace up .
-# → Cloud: docker (built-in default) 
-# → Agent: claude (built-in default)
-
-# Explicit overrides
-claude-vm workspace up . --agent "claude,goose"     # Multiple agents
-claude-vm workspace up . --agent "codex"            # Single different agent
-claude-vm workspace up . --agent "null"             # No agents in devcontainer
-claude-vm workspace up . --cloud fly                # Different cloud
-```
-
-**Conversation Creation Behavior:**
-```bash
-# Uses claude agent when available in workspace
-claude-vm chat --new "hello-world"
-# → Agent: claude (if available in workspace)
-
-# Explicit agent specification
-claude-vm chat --new "hello-world" --agent goose
-# → Agent: goose (if available in workspace)
-```
 
 **Agent-Provider Relationships:**
 - **Agents** are configured to use specific **providers**
@@ -503,34 +609,65 @@ claude-vm chat --new "hello-world" --agent goose
 # Providers are just endpoints
 claude-vm provider set-config anthropic --option api-key=sk-ant-xxx
 
-# Agents are configured to use providers
-claude-vm agent set-config claude --option provider=anthropic
+# Some agents support multip providers, and can be configured to use them
+claude-vm agent set-config goose --option provider=anthropic
 ```
-
-**Benefits:**
-- **Simple defaults**: One sensible default agent (claude), explicit when you want different
-- **Explicit multi-agent**: Use `--agent "claude,goose"` when you want multiple
-- **Explicit no-agent**: Use `--agent "null"` when you want none
-- **Override flexibility**: Easy to specify exactly what you want when defaults don't fit
 
 ---
 
+## Cloud Infrastructure Architecture
+
+**VM + Devcontainer Design (Codespaces Model):**
+Claude VM launches **virtual machines** on cloud providers, then runs coding agents **inside devcontainers** for development work:
+
+- **Digital Ocean**: Uses Droplets (not Digital Ocean Apps or container services)
+- **Fly.io**: Uses Machines (VM instances, not container deployment)  
+- **AWS**: Uses EC2 instances (not ECS/Fargate container services)
+- **Docker**: Uses local Docker daemon
+
+**Why agents in devcontainers?**
+1. **Full development capabilities**: Agents can install packages, run services via Docker-in-Docker
+2. **VS Code integration**: Seamless Remote-Containers experience for users
+3. **Environment consistency**: Agents and users work in identical, reproducible environments
+4. **Industry standard**: Follows GitHub Codespaces, Gitpod patterns
+5. **Appropriate scope**: Development-focused, not system administration
+
+**Architecture Flow:**
+```
+claude-vm CLI → Launch VM (droplet/machine/ec2) → Create devcontainer → Agents run inside devcontainer
+```
+
+**System Architecture:**
+```
+VM (managed infrastructure):
+├── Docker daemon
+├── SSH daemon (for VM management)
+└── Devcontainer (development environment):
+    ├── Claude Code + other agents (multiple agents per container)
+    ├── SSH server (for direct container access)
+    ├── VS Code Server
+    ├── Project code (/workspaces/repo/)
+    ├── Development tools
+    ├── Docker-in-Docker support
+    └── /workspaces/ (persistent workspace data)
+```
+
+**Key Points:**
+- **Multiple agents per container**: Claude Code, Goose, Gemini can all run in same devcontainer
+- **VM is background infrastructure**: Users never directly access the VM
+- **Direct devcontainer access**: SSH server installed in devcontainer for shell access
+
+
 ### Volume Persistence
 
-Every cloud platform allows us to mount volumes; we mount them in /workspace. We can stop a container, and then start it again with the same volume preserving all data (such as edited code).
+Every cloud platform allows us to mount volumes; we mount them in /workspace. We can stop a VM, and then start it again with the same volume preserving all data (such as edited code).
 
-```dockerfile
-# Dockerfile
-WORKDIR /workspace  # This is your persistent volume
+**Container Setup:**
+- WORKDIR /workspace (persistent volume mount point)  
+- Store git repos, package caches, and user configs in volume
+- Create symlinks from home directory to workspace cache directories for optimization:
 
-# Store these in volume:
-# - /workspace/projects (git repos)
-# - /workspace/.cache (package caches)
-# - /workspace/.config (user configs)
-
-# Optimize with Symlinks
-
-# In your container startup script
+```bash
 ln -s /workspace/.cache/npm ~/.npm
 ln -s /workspace/.cache/pnpm ~/.pnpm
 ln -s /workspace/.cargo ~/.cargo
@@ -539,23 +676,201 @@ ln -s /workspace/go ~/go
 
 ### Persistence with S3 Object Store
 
-The only things we really need to save from each devcontainer session is:
+**Git Credential Security:**
+GitHub credentials (SSH keys, personal access tokens) are stored securely on the VM and never exposed to containers:
 
-- 1. Logs from Claude
-- 2. Git diffs that were not committed and pushed (all files tracked by git)
+```bash
+# VM Level (Trusted):
+~/.ssh/id_rsa                    # GitHub SSH key (never copied to container)
+ssh-agent running with keys     # SSH agent with loaded keys
+git credential helper           # Provides tokens from keychain
 
-We probably also want to store files that are not tracked by git; in the future non-devs will use things outside of git (such as excel spreadsheets or PDFs). We should not assume that everything not tracked by git is worthless.
+# Container Level (Sandboxed):
+SSH_AUTH_SOCK forwarded         # Points to VM's SSH agent
+git configured to use agent     # All git operations work normally
+```
 
-This means we do not really need persistent volumes; if the user wants to start up workspace-abc123 again, we can just start a fresh container, pull in the files it had (using git? tarball?) and the pull in the above from our S3 object store to recreate state. This is a lot cheaper.
+**Result**: Claude gets full git access (`git commit`, `git push`, `git pull`, branch operations) without ever seeing the actual SSH keys or tokens. Credentials remain on VM, authentication happens via agent forwarding.
 
-*Issue:* Also, when you 'delete' a workspace, what does that mean? Do we delete the volume + object-store + record of it from history?
+## Credential Management System
 
-### Listing Workspaces
+**Two Distinct Credential Scopes:**
 
-How does clauce-vm run it's `list` command? We can store local files on the dev's machine describing the workspaces that exist. For pro users, we can store an authoratative state in our database for each user / enterprise. This means devs are not tied to a specific machine, and can work together. We will need to store:
+### Development Credentials vs System Configuration
 
-- 1. list of all workspaces, and their statuses
-- 2. S3 object store with logs + files
+**Development Credentials** (`claude-vm credential`):
+- **Used BY**: AI agents (Claude, Goose, etc.) running inside devcontainers
+- **Purpose**: Enable agents to access development services during coding work
+- **Examples**: GitHub repos, Stripe test APIs, development databases, NPM registries
+- **Security**: Stored on VM, securely forwarded to containers via helpers/proxies
+- **Lifecycle**: Per-project, selected per workspace
+
+**System Configuration** (`claude-vm cloud`, `claude-vm provider`, `claude-vm storage`):
+- **Used BY**: claude-vm CLI itself for infrastructure operations
+- **Purpose**: Enable claude-vm to provision VMs, run agents, manage backups
+- **Examples**: DigitalOcean API for VMs, Anthropic API for Claude agent, S3 for backups
+- **Security**: Stored locally, never exposed to containers
+- **Lifecycle**: Set once globally, used by claude-vm infrastructure
+
+---
+
+## Development Credential Management
+
+**Three-Step Development Credential Approach:**
+
+### 1. Credential Registration (One-Time Setup)
+
+**Smart Defaults for Common Services:**
+```bash
+# Reserved keywords with automatic credential type detection:
+claude-vm credential add github ~/.ssh/id_rsa              # SSH key (covers Git, Go modules, Zig packages)
+claude-vm credential add aws my-dev-profile                # AWS profile
+claude-vm credential add stripe sk_test_abc123             # API key → STRIPE_API_KEY
+claude-vm credential add openai sk-abc123def456            # API key → OPENAI_API_KEY  
+claude-vm credential add npm ~/.npmrc                      # Config file (npm)
+claude-vm credential add pnpm ~/.npmrc                     # Config file (pnpm) 
+claude-vm credential add yarn ~/.yarnrc.yml                # Config file (yarn)
+claude-vm credential add pip ~/.pip/pip.conf               # Config file (Python traditional)
+claude-vm credential add uv ~/.config/uv/uv.toml           # Config file (Python modern)
+claude-vm credential add docker myuser:dckr_pat_abc123     # Registry auth
+claude-vm credential add anthropic claude_api_key_123     # API key → ANTHROPIC_API_KEY
+claude-vm credential add supabase https://abc.supabase.co:service_key_xyz  # API key → SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
+```
+
+**Manual Patterns for Custom/Unlisted Services:**
+```bash
+# Full control for edge cases or custom services:
+claude-vm credential add my-api --env-var MY_API_KEY=abc123
+claude-vm credential add internal-db --proxy postgresql://internal:5432/app --local-port 5432
+claude-vm credential add github-token --env-var GITHUB_TOKEN=ghp_123  # Override default SSH
+claude-vm credential add custom-service --http-header "Authorization: Bearer jwt123"
+```
+
+**Supported Credential Patterns:**
+- `--ssh-key PATH`: SSH agent forwarding (Git, SSH, rsync)
+- `--env-var KEY=VALUE`: Environment variable injection (REST APIs)
+- `--credential-helper TOOL --profile NAME`: System credential helpers (AWS, GCP, Azure) 
+- `--proxy CONNECTION_STRING --local-port PORT`: Database/service proxies
+- `--config-file PATH`: Mount configuration files (.npmrc, .gitconfig)
+- `--registry-auth USERNAME:TOKEN`: Container registry authentication
+- `--http-header "HEADER: VALUE"`: HTTP proxy with auth header injection
+
+**Reserved Service Keywords:**
+```bash
+github      → SSH key (covers Git, Go modules, Zig packages)
+gitlab      → SSH key (covers GitLab repos, Go modules, Zig packages)
+aws         → AWS credential helper with profile
+gcp         → GCP credential helper  
+azure       → Azure credential helper
+stripe      → STRIPE_API_KEY environment variable
+openai      → OPENAI_API_KEY environment variable
+anthropic   → ANTHROPIC_API_KEY environment variable
+npm         → .npmrc config file mounting (npm)
+pnpm        → .npmrc config file mounting (pnpm)
+yarn        → .yarnrc.yml config file mounting (yarn)
+pip         → pip config file mounting (Python traditional)
+uv          → uv config file mounting (Python modern)
+cargo       → .cargo/config.toml config file mounting (Rust)
+docker      → Docker registry authentication
+supabase    → SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
+neon        → Database proxy (PostgreSQL)
+planetscale → Database proxy (MySQL)
+railway     → Database proxy
+vercel      → VERCEL_TOKEN environment variable
+netlify     → NETLIFY_AUTH_TOKEN environment variable
+```
+
+# List registered credentials:
+claude-vm credential list
+# github          SSH Key        Ready (covers Git + Go + Zig)
+# aws             AWS Profile    Ready (my-dev-profile)
+# stripe          API Key        Ready
+# openai          API Key        Ready  
+# npm             Config File    Ready
+# pnpm            Config File    Ready
+# yarn            Config File    Ready
+# pip             Config File    Ready (Python traditional)
+# uv              Config File    Ready (Python modern)
+# docker          Registry       Ready
+```
+
+### 2. Workspace Credential Selection
+
+**Preferred: devcontainer.json specification:**
+```json
+{
+  "name": "My Fullstack App",
+  "image": "node:18",
+  "customizations": {
+    "claudeVM": {
+      "credentials": [
+        "github",
+        "aws", 
+        "stripe",
+        "openai",
+        "pnpm",
+        "docker"
+      ]
+    }
+  }
+}
+```
+
+**Alternative: CLI flags:**
+```bash
+claude-vm workspace up . --credentials github,aws,stripe,pnpm
+```
+
+### 3. Secure Credential Forwarding
+
+**VM Level (Trusted):**
+- Stores actual credentials in keychain/filesystem
+- Runs SSH agents, credential helpers, database proxies
+- Provides secure credential forwarding to containers
+
+**Container Level (Sandboxed):**
+- Gets access via forwarded agents/helpers only
+- SSH_AUTH_SOCK, AWS credential helpers, environment variable helpers
+- Never sees raw credentials in filesystem or environment
+
+**Runtime Examples:**
+```bash
+# Claude gets full access via secure forwarding:
+git push origin main              # SSH agent forwarding
+aws s3 ls my-bucket              # AWS credential helper
+docker push myregistry/image     # Docker registry auth helper
+psql $DATABASE_URL               # Database connection proxy
+npm publish                      # NPM token helper
+curl -H "Auth: Bearer $STRIPE_API_KEY" api.stripe.com  # Environment variable helper
+```
+
+This ensures Claude can use all necessary services for development while maintaining complete credential isolation.
+
+**Automated Backup Process:**
+
+**Self-Hosted (No API Server):**
+- VM has direct access to S3-compatible storage credentials (DigitalOcean Spaces, Cloudflare R2, AWS S3, etc.)
+- VM monitors `/workspace/deliverables/` and uploads directly to configured storage
+- Git operations work through credential forwarding (described above)
+
+**API Server Model (Self-Hosted or SaaS):**
+- Containers upload files to claude-vm API server via HTTP
+- API server handles all S3-compatible storage operations using server-managed credentials  
+- Prevents chaotic direct S3 access from every container
+- Git operations still use credential forwarding for direct container access
+
+**What Gets Backed Up:**
+1. **Git Repository**: Automatic commits and pushes (VM-level or API server)
+2. **Deliverables**: Files in `/workspace/deliverables/` → S3-compatible storage
+3. **Agent State**: Conversation logs and workspace state
+
+**Security Model:**
+- **Self-hosted**: VM-level credential isolation acceptable (user controls infrastructure)
+- **API Server**: Centralized credential management, containers never see storage credentials
+- **Agents**: Never see external credentials in either model
+
+**S3-Compatible Storage:**
+We support any S3-compatible API including DigitalOcean Spaces, Cloudflare R2, AWS S3, Minio, etc. - not just AWS S3.
 
 ---
 
@@ -674,115 +989,64 @@ claude-vm workspace up github.com/user/repo --agent claude,goose,gemini,codex  #
 
 ### API Server Architecture & Authentication
 
-claude-vm supports **three distinct access patterns** with unified authentication via GitHub:
+claude-vm uses **simplified token-based authentication** inspired by HashiCorp Vault, Docker CLI, and GitHub CLI patterns. This approach eliminates OAuth complexity from containers while supporting three distinct web UI hosting patterns:
 
-1. **Local CLI → Devcontainers** (CLI generates bearer tokens)
-2. **Hosted Service → Devcontainers** (OAuth proxy with bearer tokens)  
-3. **Direct Browser → Container** (GitHub organization membership)
+1. **Localhost Web UI** (like `vault ui`)
+2. **User's Own Web Server** (like self-hosted services)
+3. **Hosted Service** (like claude-vm.com)
 
-## Multi-Pattern Authentication Strategy
+## Unified Token-Based Strategy
 
-### Pattern 1: Local CLI → Devcontainers
-**Authentication Flow:**
-```bash
-# User runs: claude-vm workspace up
-# 1. CLI generates unique bearer token for container
-# 2. Token injected into container at startup via environment
-# 3. Token stored locally: ~/.claude-vm/workspaces.json
-# 4. Local web server uses stored tokens to call container APIs
+**Core Principles:**
+- Containers are pure API servers with bearer token authentication only
+- No OAuth complexity per container (learned from Vault approach)
+- Token storage follows proven CLI patterns (Docker, GitHub CLI, Vault)
+- Web UIs act as authenticated proxies to container APIs
 
-# Example ~/.claude-vm/workspaces.json:
-{
-  "bold-fire-1234": {
-    "url": "https://bold-fire-1234.fly.dev",
-    "bearer_token": "cvt_abc123...",  # CLI-generated token
-    "status": "running"
-  }
-}
+## Container API Server (Simplified)
 
-# API Request:
-# GET https://bold-fire-1234.fly.dev/api/conversations
-# Authorization: Bearer cvt_abc123...
+**Architecture Overview:**
+```
+WebUI (Browser) ←→ Container API Server ←→ tmux sessions ←→ Agents
+  WebSocket/SSE        RESTful API           Terminal I/O      Claude/Goose/etc.
 ```
 
-### Pattern 2: Hosted Service → Devcontainers  
-**Authentication Flow:**
-```bash
-# User creates workspace via claude-vm.com (hosted service)
-# 1. User authenticates: OAuth with GitHub (organization membership verified)
-# 2. Hosted service generates bearer token for container
-# 3. Token injected into container at startup
-# 4. Token stored in hosted service database
-# 5. Hosted service proxies user requests to container APIs
+**Communication Flow:**
+1. **WebUI** sends message via WebSocket to Container API
+2. **Container API** forwards message to named tmux session via `tmux send-keys`
+3. **tmux session** delivers input to running agent (Claude, Goose, etc.)
+4. **Agent** processes input, writes response to terminal
+5. **Container API** captures terminal output, streams back to WebUI via WebSocket
+6. **WebUI** displays agent response in real-time
 
-# User → Hosted Service: GitHub OAuth + organization membership check
-# Hosted Service → Container: Bearer token (same as CLI pattern)
-```
-
-### Pattern 3: Direct Browser → Container (GitHub Organization Auth)
-**Authentication Flow:**
-```yaml
-Container GitHub OAuth Setup:
-  # Each container has GitHub OAuth app configuration
-  GITHUB_CLIENT_ID: "container-oauth-app-id"
-  GITHUB_CLIENT_SECRET: "oauth-secret"
-  GITHUB_ORG_NAME: "your-company"           # Required organization
-  GITHUB_ORG_REQUIRED: "true"               # Enforce membership
-  
-Direct Browser Access:
-  1. User visits: https://bold-fire-1234.fly.dev
-  2. Container redirects: GitHub OAuth login
-  3. GitHub OAuth callback with user info + organization membership
-  4. Container validates: User is member of required organization
-  5. Container sets session cookie with GitHub user info
-  6. User accesses workspace with authenticated session
-
-Organization Membership Validation:
-  # Container calls GitHub API to verify membership
-  GET https://api.github.com/orgs/{org}/members/{username}
-  Authorization: token {oauth_token}
-  # Response: 200 (member) or 404 (not member or private membership)
-```
-
-## Workspace API Server (runs inside each container)
-
-**Container Configuration:**
+**Pure API Server Configuration:**
 ```yaml
 Port: 8080
-Base Authentication Methods:
-  1. Bearer Token: CLI/hosted service access (Authorization: Bearer cvt_...)
-  2. GitHub OAuth Session: Direct browser access (session cookies)
-  3. SSH Key: Terminal access (ssh user@container.host)
+Authentication: Bearer tokens ONLY (no OAuth, no sessions)
 
-GitHub OAuth Environment Variables:
-  GITHUB_CLIENT_ID: "oauth-app-client-id"
-  GITHUB_CLIENT_SECRET: "oauth-app-secret"  
-  GITHUB_ORG_NAME: "required-organization"
-  GITHUB_ORG_REQUIRED: "true|false"
+Environment Variables:
+  WORKSPACE_SECRET: "jwt-signing-key"           # For token validation
+  WORKSPACE_ID: "bold-fire-1234"               # Workspace identifier
+
+Authentication Logic:
+  1. Check Authorization: Bearer <token> header
+  2. Validate JWT token signature and expiration
+  3. Extract workspace/user claims from token
+  4. Allow/deny API access based on token validity
   
-Authentication Priority:
-  1. Valid bearer token → immediate API access
-  2. Valid GitHub session cookie → API access (organization verified)
-  3. No auth → redirect to GitHub OAuth (direct browser access)
-  4. Invalid/expired auth → 401 Unauthorized
+# No GitHub OAuth, no sessions, no cookies - pure stateless API
 ```
 
 **API Endpoints:**
 ```yaml
-# Authentication Endpoints (GitHub OAuth for direct browser access)
-GET    /auth/github                             # Initiate GitHub OAuth flow
-GET    /auth/github/callback                    # OAuth callback handler  
-GET    /auth/logout                             # Clear session, redirect to login
-GET    /auth/status                             # Current auth status + user info
-
-# Core Web Interface Support  
+# Core Web Interface Support
 WS     /api/terminal/{conversation-name}        # Stream tmux session to browser
 GET    /api/conversations/{name}/data           # Get parsed conversation data (JSONL → JSON)
 POST   /api/conversations/{name}/messages       # Send message via tmux + parse response
 SSE    /api/events                              # Real-time conversation updates
 
 # Conversation Management
-GET    /api/conversations                       # List conversations from conversations.json
+GET    /api/conversations                       # List conversations from conversations.yaml
 POST   /api/conversations                       # Create conversation + tmux session
   - name: "fix-auth-bug" (required)
   - agent: "claude" (required) 
@@ -802,184 +1066,1004 @@ Events:
   - conversation.renamed    # Conversation name changed
   - backup.completed        # S3 backup finished
   - workspace.idle          # No activity detected (approaching auto-shutdown)
-  - auth.login              # User logged in via GitHub OAuth
-  - auth.logout             # User logged out
 ```
 
-## Centralized Task Server (claude-vm.com)
+## Four Web UI Access Patterns
 
-**Hosted Service Configuration:**
+Users can access their containers through four distinct patterns, each serving different use cases:
+
+### Pattern 1: Localhost Dashboard (`claude-vm web`)
+**Use Case:** Developer's primary workflow on their local machine
+
+```bash
+# Local usage (no auth)
+claude-vm web
+
+# ERROR: Public host without auth
+claude-vm web --host 0.0.0.0
+# → ERROR: Public host requires authentication. Use --auth-password or --auth-github-org
+
+# Self-hosted with simple password
+claude-vm web --host 0.0.0.0 --auth-password team-secret
+
+# Self-hosted with GitHub org membership
+claude-vm web --host 0.0.0.0 --auth-github-org mycompany
+
+# Self-hosted with GitHub org + teams
+claude-vm web --host 0.0.0.0 --auth-github-org mycompany --auth-github-teams dev-team,ops
+
+# Self-hosted with explicit GitHub OAuth credentials
+claude-vm web --host 0.0.0.0 --auth-github-org mycompany \
+              --auth-github-client-id abc123 \
+              --auth-github-client-secret def456
+
+# Using auth config file  
+claude-vm web --host 0.0.0.0 --auth-config ./auth.yaml
+```
+
+**Command Options:**
+```
+AUTHENTICATION (required for non-localhost hosts):
+  --auth-password <PASSWORD>         Simple password protection
+  --auth-github-org <ORG>            Required GitHub organization
+  --auth-github-teams <TEAMS>        GitHub teams (comma-separated, optional)
+  --auth-github-client-id <ID>       GitHub OAuth client ID (optional, uses defaults)
+  --auth-github-client-secret <SECRET>  GitHub OAuth client secret (optional)
+  --auth-config <PATH>               Auth configuration file (YAML)
+
+CORE OPTIONS:
+  --port, -p <PORT>                  Port to run on (default: 3000)
+  --host <HOST>                      Host to bind to (default: 127.0.0.1)  
+  --ssh-key <PATH>                   SSH private key path (default: auto-detect)
+  --config <PATH>                    Config file path (default: ~/.claude-vm/config.yaml)
+  --no-browser                       Don't auto-open browser
+  --timeout <DURATION>               JWT expiration timeout (default: 1h)
+
+EXAMPLES:
+  # Local development (no auth required)
+  claude-vm web
+
+  # Simple password protection for team access
+  claude-vm web --host 0.0.0.0 --auth-password team-secret-123
+  
+  # GitHub organization restriction
+  claude-vm web --host 0.0.0.0 --auth-github-org acme-corp
+  
+  # GitHub org + specific teams
+  claude-vm web --host 0.0.0.0 --auth-github-org acme-corp --auth-github-teams dev-team,ops
+  
+  # Custom port with auth
+  claude-vm web --host 0.0.0.0 --port 8080 --auth-github-org mycompany
+```
+
+**Auth Configuration File (Standard Pattern):**
+
+**Option 1: Environment Variables (Recommended)**
 ```yaml
-Purpose: Coordinate workspaces + GitHub OAuth proxy for hosted users
-Database: PostgreSQL
-GitHub OAuth App: "claude-vm-hosted-service"
+# auth.yaml
+auth:
+  type: github
+  github:
+    org: "mycompany"
+    teams: ["dev-team", "ops-team"]     # Optional
+    client_id: "${GITHUB_CLIENT_ID}"    # From environment
+    client_secret: "${GITHUB_CLIENT_SECRET}"  # From environment
+    callback_url: "https://dev-tools.company.com/auth/github/callback"
 
-Services:
-  # User Authentication (GitHub OAuth)
-  - GitHub organization membership verification
-  - Session management with organization context
-  - Multi-organization support for enterprise users
-  
-  # Workspace Registry  
-  - Track all user workspaces across providers
-  - Store workspace metadata (provider, status, URL, org context)
-  - Handle workspace discovery for web UI
-  
-  # Bearer Token Management
-  - Generate unique bearer tokens for user workspaces
-  - Token rotation and expiration management
-  - Workspace access control by organization membership
-  
-  # GitHub Integration
-  - Store GitHub App credentials for managed repositories  
-  - Generate fresh installation tokens for workspace git access
-  - Organization repository access management
-  
-  # S3 Coordination
-  - Generate pre-signed URLs for workspace backups (org-scoped)
-  - Manage backup lifecycle policies per organization
-  - Handle restore operations with access control
+# Alternative: simple password
+# auth:
+#   type: password
+#   password: "${AUTH_PASSWORD}"
 ```
 
-**Hosted Service API Endpoints:**
+**Option 2: Direct Values (Less Secure)**
 ```yaml
-# User Authentication (GitHub OAuth)
-POST   /api/auth/github                    # Initiate GitHub OAuth flow
-GET    /api/auth/github/callback           # OAuth callback handler
-POST   /api/auth/logout                    # Clear session
-GET    /api/auth/user                      # Current user + organization info
-
-# Organization Management  
-GET    /api/orgs                           # List user's organizations
-POST   /api/orgs/{org}/workspaces          # Create workspace in organization context
-GET    /api/orgs/{org}/workspaces          # List organization workspaces
-GET    /api/orgs/{org}/members             # List organization members (admin only)
-
-# Workspace Management (organization-scoped)
-GET    /api/workspaces                     # List user's accessible workspaces
-POST   /api/workspaces                     # Register new workspace  
-DELETE /api/workspaces/{id}                # Unregister workspace
-GET    /api/workspaces/{id}/access         # Get workspace bearer token
-POST   /api/workspaces/{id}/invite         # Invite organization member to workspace
-
-# GitHub Integration
-POST   /api/github/refresh-token           # Get fresh GitHub token (managed mode)
-GET    /api/github/repos                   # List accessible repositories
-POST   /api/github/repos/{repo}/workspace  # Create workspace from repository
-
-# S3 Backup (organization-scoped)
-GET    /api/backup/upload-url              # Get S3 pre-signed upload URL
-GET    /api/backup/download-url            # Get S3 pre-signed download URL
-POST   /api/backup/restore                 # Restore workspace from backup
+# auth.yaml
+auth:
+  type: github
+  github:
+    org: "mycompany"
+    teams: ["dev-team", "ops-team"]
+    client_id: "Iv1.abc123def456"       # Direct value
+    client_secret: "secret789xyz"       # Direct value (not recommended)
+    callback_url: "https://dev-tools.company.com/auth/github/callback"
 ```
 
-## Authentication Implementation Examples
+**How It Works:**
+- **Security Check**: Errors if non-localhost host specified without authentication
+- **GitHub OAuth Flow**: User logs in → Check org/team membership → Create session → Access dashboard  
+- **Container Access**: Uses SSH private key to generate JWTs on-demand for container API calls
+- **Session Management**: Web session for dashboard access, JWTs for container communication
 
-### GitHub Organization Membership Validation
-```javascript
-// Container-side organization membership check
-async function validateGitHubOrgMembership(accessToken, username) {
-  const requiredOrg = process.env.GITHUB_ORG_NAME;
-  if (!requiredOrg) return true; // No organization requirement
+### Pattern 2: SaaS Dashboard (claude-vm.com)
+**Use Case:** Team collaboration, mobile access, unified management
+
+```bash
+# Access via web browser after login
+open https://claude-vm.com
+# → OAuth login (GitHub/Google)
+# → See all SaaS-registered containers
+```
+
+**How It Works:**
+- OAuth login establishes user identity
+- Shows only SaaS-registered containers (created while logged in)
+- Uses SaaS service SSH keys for container authentication
+- Provides team features, billing, advanced management
+
+### Pattern 3: Individual Container Web UI
+**Use Case:** Direct access to specific workspace, sharing with others
+
+```bash
+# Generate JWT for specific container
+claude-vm auth token bold-fire-1234
+
+# Visit container URL directly
+open https://bold-fire-1234.fly.dev
+# → Shows JWT authentication form
+# → Paste token → Full web UI access
+```
+
+**How It Works:**
+- Each container has web UI built-in (runs on port 8080)
+- Simple JWT authentication form
+- Scoped access to single workspace only
+- Perfect for sharing access to specific project
+
+### Pattern 4: Self-Hosted Dashboard
+**Use Case:** Enterprise compliance, custom domains, full control
+
+```bash
+# Deploy self-hosted dashboard with GitHub OAuth (using config file)
+docker run -d --name claude-vm-dashboard \
+  -p 443:3000 \
+  -v ~/.ssh/id_rsa:/app/.ssh/id_rsa:ro \
+  -v ~/.claude-vm/config.yaml:/app/config.yaml:ro \
+  -v ./auth.yaml:/app/auth.yaml:ro \
+  -e CLAUDE_VM_AUTH_CONFIG="/app/auth.yaml" \
+  -e CLAUDE_VM_DOMAIN="dev-containers.acme.com" \
+  claude-vm/web-ui
+
+# Deploy using standard pattern: config file + environment variables
+docker run -d --name claude-vm-dashboard \
+  -p 443:3000 \
+  -v ~/.ssh/id_rsa:/app/.ssh/id_rsa:ro \
+  -v ~/.claude-vm/config.yaml:/app/config.yaml:ro \
+  -v ./auth.yaml:/app/auth.yaml:ro \
+  -e GITHUB_CLIENT_ID="Iv1.abc123def456" \
+  -e GITHUB_CLIENT_SECRET="secret789xyz" \
+  claude-vm/web-ui --host 0.0.0.0 --auth-config /app/auth.yaml
+
+# Kubernetes deployment with ConfigMap + Secrets
+kubectl create secret generic github-oauth \
+  --from-literal=GITHUB_CLIENT_ID="Iv1.abc123def456" \
+  --from-literal=GITHUB_CLIENT_SECRET="secret789xyz"
+kubectl apply -f claude-vm-dashboard.yaml
+```
+
+**How It Works:**
+- **Same Authentication**: Uses identical auth system as `claude-vm web`
+- **Container Access**: Uses mounted SSH private key for JWT generation
+- **Enterprise Features**: Custom domains, branding, and team management
+- **Flexible Deployment**: Docker, Kubernetes, or traditional hosting
+
+## GitHub OAuth Setup for Self-Hosting
+
+### Why OAuth Over PATs?
+
+**Personal Access Token Approach (❌ Not Recommended):**
+```bash
+# User would need to manually create PAT with read:org scope
+# Then paste it into self-hosted dashboard
+# Problems: cumbersome UX, broader access than needed, manual management
+```
+
+**OAuth App Approach (✅ Recommended):**
+- ✅ **Better UX**: Users just click "Login with GitHub"
+- ✅ **Secure**: Limited scope, proper OAuth flow
+- ✅ **Organization Control**: Admins approve which apps can access org
+- ✅ **Industry Standard**: Same as Grafana, GitLab, ArgoCD
+
+### Setup Process
+
+**1. Create GitHub OAuth App:**
+```bash
+# Organization admin goes to:
+# GitHub → Settings → Developer settings → OAuth Apps → New OAuth App
+
+Application name: "Acme Corp Claude-VM Dashboard"  
+Homepage URL: "https://dev-tools.acme.com"
+Authorization callback URL: "https://dev-tools.acme.com/auth/github/callback"
+
+# GitHub provides:
+Client ID: "Iv1.abc123def456"
+Client Secret: "secret789xyz"
+```
+
+**2. Organization Approval:**
+```bash
+# Organization admin goes to:
+# GitHub Org → Settings → Third-party access → OAuth Apps
+# → Review pending requests → Approve "Acme Corp Claude-VM Dashboard"
+# → Set organization member access policy (if needed)
+```
+
+**3. Deploy Self-Hosted Dashboard:**
+```yaml
+# auth.yaml
+auth:
+  type: github
+  github:
+    org: "acme-corp"                    # Your GitHub org
+    teams: ["dev-team", "ops"]          # Optional: restrict to teams
+    client_id: "${GITHUB_CLIENT_ID}"    # From environment variables
+    client_secret: "${GITHUB_CLIENT_SECRET}"  # From environment variables
+    callback_url: "https://dev-tools.acme.com/auth/github/callback"
+```
+
+### User Login Flow
+
+**"Login with GitHub" Experience:**
+```bash
+# 1. User visits https://dev-tools.acme.com
+# 2. Sees "Login with GitHub" button
+# 3. Clicks button → redirected to github.com/login/oauth/authorize
+# 4. GitHub shows: "Acme Corp Claude-VM Dashboard wants access to verify your organization membership"
+# 5. User clicks "Authorize"
+# 6. GitHub redirects back to dev-tools.acme.com with OAuth code
+# 7. Dashboard exchanges code for access token
+# 8. Dashboard calls GitHub API to verify org membership
+# 9. If user in required org/teams → create session → access granted
+```
+
+### GitHub API Integration
+
+**Organization Membership Check:**
+```bash
+# Dashboard makes these API calls with user's OAuth token:
+
+# 1. Get user info
+GET https://api.github.com/user
+# Returns: {"login": "john-doe", "id": 12345, ...}
+
+# 2. Check organization membership  
+GET https://api.github.com/user/memberships/orgs/acme-corp
+# Returns: {"state": "active", "role": "member", ...} or 404 if not member
+
+# 3. Check team membership (if teams specified)
+GET https://api.github.com/user/teams
+# Returns: [{"name": "dev-team", "organization": {"login": "acme-corp"}}, ...]
+```
+
+**Required OAuth Scopes:**
+```bash
+# OAuth app requests these permissions:
+read:org    # Check organization membership
+read:user   # Get user profile info
+# Note: Very limited scope, much safer than broad PAT
+```
+
+**Security Benefits:**
+- ✅ **No Password Management**: Uses existing GitHub accounts
+- ✅ **Organization Control**: Admins control access via GitHub org membership  
+- ✅ **Team Granularity**: Restrict to specific teams within organization
+- ✅ **Audit Trail**: GitHub provides login/access logs
+- ✅ **2FA Support**: Inherits GitHub's security policies (2FA requirements, etc.)
+
+## Pattern Comparison
+
+| Pattern | Access | Web Auth | Container Auth | Best For |
+|---------|--------|----------|---------------|----------|
+| **Localhost** | `localhost:3000` | None (localhost) / Required auth (external) | SSH-signed JWTs | Daily development |
+| **SaaS Dashboard** | `claude-vm.com` | OAuth (GitHub/Google) | Service SSH JWTs | Team collaboration |
+| **Individual Container** | `container-url.fly.dev` | Pasted JWT token | Same JWT | Sharing projects |
+| **Self-Hosted** | `company.com` | GitHub OAuth + Org membership | SSH-signed JWTs | Enterprise compliance |
+
+**Authentication Methods Available:**
+- **No auth** - Default for localhost (127.0.0.1), errors for external hosts
+- `--auth-password <secret>` - Simple password protection
+- `--auth-github-org <org>` - GitHub OAuth with organization membership requirement  
+- `--auth-config <file>` - YAML configuration file with detailed auth settings
+
+**Two-Tier Authentication Architecture:**
+1. **User → SaaS**: OAuth (GitHub, Google) for web interface access
+2. **SaaS → Container**: Service SSH keys for backend operations
+
+## Simplified SaaS Integration (Login-Based)
+
+**Core Principle**: User's login state determines whether new containers get SaaS integration.
+
+### Login-Based Container Creation
+```bash
+# Login to SaaS (optional - enables SaaS integration for new containers)
+claude-vm login
+# → OAuth flow with claude-vm.com 
+# → Stores account ID and access token locally
+
+# Check login status
+claude-vm auth status
+# Output: Logged in as user-123 (claude-vm.com)
+#         SSH Key: ~/.ssh/claude-vm_ed25519
+
+# Logout (disables SaaS integration for future containers)
+claude-vm logout
+# → Clears login state
+# → Existing SaaS-managed containers remain accessible
+```
+
+### Container Creation Based on Login State
+```bash
+claude-vm workspace up .
+
+# IF user is logged in:
+# → Injects user SSH key + SaaS service key + account ID
+# → Container automatically registers with SaaS
+# → Visible in both local CLI and SaaS web dashboard
+
+# IF user is NOT logged in:
+# → Injects only user SSH key  
+# → Container is local-only (no SaaS integration)
+# → Only accessible via local CLI and local web UI
+```
+
+### Container Ownership via Account ID Injection
+```yaml
+# Local-only container (user not logged in)
+USER_SSH_PUBLIC_KEY: "ssh-rsa AAAAB3... user@machine"
+WORKSPACE_ID: "bold-fire-1234"
+
+# SaaS-integrated container (user logged in)
+USER_SSH_PUBLIC_KEY: "ssh-rsa AAAAB3... user@machine"
+SAAS_SSH_PUBLIC_KEY: "ssh-rsa AAAAB3... service@claude-vm.com"
+WORKSPACE_ID: "bold-fire-1234"
+USER_ACCOUNT_ID: "user-123"  # ← SaaS knows this container belongs to user-123
+```
+
+### Container Self-Registration
+
+**Container Startup Logic:**
+- Always setup user SSH access with user's public key
+- If SaaS-integrated (USER_ACCOUNT_ID present): add SaaS service public key  
+- If SaaS-integrated: register with SaaS API endpoint with container ID and account ID
+- Start SSH daemon and API server
+
+## Container Discovery & Registration Architecture
+
+### Local Container Discovery (JSON File Tracking)
+```bash
+# ~/.claude-vm/workspaces.yaml tracks all known containers
+claude-vm web
+# → Reads config file to discover containers
+# → Makes API calls to each container URL to get status
+# → Shows unified dashboard of local + SaaS containers
+```
+
+**Local Config File:**
+```yaml
+# ~/.claude-vm/config.yaml
+auth:
+  logged_in: true
+  account_id: "user-123"
+  access_token: "oauth2_token_abc123..."
+  token_expires: "2025-09-11T04:13:07Z"
+  endpoint: "https://claude-vm.com"
+
+workspaces:
+  bold-fire-1234:
+    url: "https://bold-fire-1234.fly.dev"
+    saas_managed: true
+    created: "2025-08-11T04:13:07Z"
+  quiet-lake-5678:
+    url: "https://quiet-lake-5678.do.dev"
+    saas_managed: false
+    created: "2025-08-10T14:22:11Z"
+```
+
+### SaaS Container Discovery (Self-Registration)
+
+**Self-Registration Process:**
+- Containers register themselves with SaaS (not CLI registration)  
+- More reliable - container startup always happens even if CLI crashes
+- If USER_ACCOUNT_ID present: container calls SaaS registration API
+- Sends container ID, container URL, and account ID to establish ownership
+
+### Complete Container Creation Flow (Logged In User)
+
+**High-Level Process:**
+1. User runs `claude-vm workspace up .`
+2. CLI checks login state from local config file
+3. CLI fetches SaaS service public key using stored OAuth token  
+4. CLI creates container with user SSH key + SaaS service key + account ID
+5. Container starts and self-registers with SaaS API
+6. CLI updates local config file with new container info
+7. Result: Container visible in both local web UI and SaaS dashboard
+
+## Simplified Access Control (Single User)
+
+**SaaS Database Schema:**
+- Users table: basic user info (ID, email, GitHub ID, name, timestamps)
+- User_containers table: container ownership mapping (user ID → container ID, URL, status, timestamps)
+- Simple 1:1 relationship - each container belongs to exactly one user
+- No teams, organizations, or complex IAM structures
+
+**Local Configuration (Login State):**
+```yaml
+# ~/.claude-vm/config.yaml
+auth:
+  logged_in: true
+  account_id: "user-123"
+  access_token: "jwt-access-token..."
+  endpoint: "https://claude-vm.com"
+
+ssh:
+  key: "~/.ssh/claude-vm_ed25519"
+
+workspaces:
+  bold-fire-1234:
+    url: "https://bold-fire-1234.fly.dev"
+    saas_managed: true
+    created: "2025-08-11T04:13:07Z"
+```
+
+**SaaS API Endpoints:**
+- OAuth login/callback endpoints for web interface authentication
+- GET /api/containers - returns user's registered containers
+- POST /api/containers - container self-registration endpoint (called by containers on startup)
+- Simple authentication - no team/organization complexity
+
+**Container Environment Variables:**
+```yaml
+USER_SSH_PUBLIC_KEY: "ssh-rsa AAAAB3... user@machine"
+SAAS_SSH_PUBLIC_KEY: "ssh-rsa AAAAB3... service@claude-vm.com"  # Only if logged in
+WORKSPACE_ID: "bold-fire-1234"
+USER_ACCOUNT_ID: "user-123"  # Only if logged in
+```
+
+**Container Startup Process:**
+1. Setup SSH access with user's public key (always)
+2. Add SaaS service public key if USER_ACCOUNT_ID present
+3. Set proper SSH permissions and start SSH daemon
+4. Configure API server for dual-key JWT validation (user + SaaS)
+5. Start workspace API server
+
+**SaaS Background Operations:**
+- Health monitoring: Check all registered containers periodically using service SSH keys
+- Backup scheduling: Trigger container backups on schedule via API calls
+- Resource monitoring: Track container usage for billing and scaling
+- All operations use service SSH keys and JWT tokens for authentication
+
+**JWT Token Types:**
+- **User tokens**: Signed with user's SSH private key for direct access (1 hour expiration)
+- **Service tokens**: Signed with SaaS SSH private key for backend operations (24 hour expiration)
+
+**Container Dual-Key Validation:**
+Containers validate JWTs using both user and SaaS SSH public keys, trying user key first, then SaaS service key for backend operations.
+
+## SaaS Service Architecture (claude-vm.com)
+
+Our centralized SaaS service manages container registration, user authentication, and background operations. Here's how containers register and establish user ownership:
+
+### Container Registration Flow
+
+**1. Container Creation with User Context:**
+When a logged-in user creates a container, CLI injects the account ID:
+```bash
+# CLI sets these environment variables during container creation
+export USER_ACCOUNT_ID="user-123"           # Links container to user account
+export SAAS_SSH_PUBLIC_KEY="ssh-rsa AAAAB..." # Enables SaaS backend operations
+export WORKSPACE_ID="bold-fire-1234"        # Unique container identifier
+```
+
+**2. Container Self-Registration on Startup:**
+```bash
+# Container startup script checks for SaaS integration
+if [ ! -z "$USER_ACCOUNT_ID" ]; then
+  # Generate service JWT for authentication
+  service_jwt=$(generate_service_jwt "$WORKSPACE_ID" "$USER_ACCOUNT_ID")
   
-  try {
-    const response = await fetch(
-      `https://api.github.com/orgs/${requiredOrg}/members/${username}`,
-      { headers: { 'Authorization': `token ${accessToken}` } }
-    );
-    return response.status === 200; // 200 = member, 404 = not member/private
-  } catch (error) {
-    console.error('GitHub org membership check failed:', error);
-    return false;
-  }
+  # Register with SaaS service
+  curl -X POST "https://claude-vm.com/api/containers/register" \
+    -H "Authorization: Bearer $service_jwt" \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"container_id\": \"$WORKSPACE_ID\",
+      \"account_id\": \"$USER_ACCOUNT_ID\",
+      \"container_url\": \"$CONTAINER_PUBLIC_URL\",
+      \"ssh_public_keys\": {
+        \"user\": \"$USER_SSH_PUBLIC_KEY\",
+        \"saas\": \"$SAAS_SSH_PUBLIC_KEY\"
+      }
+    }"
+fi
+```
+
+**3. SaaS Service Registration API:**
+```
+POST /api/containers/register
+Authentication: Service JWT (signed with SaaS SSH key)
+Rate Limiting: 10 requests/minute per container
+
+Request Body:
+{
+  "container_id": "bold-fire-1234",
+  "account_id": "user-123", 
+  "container_url": "https://bold-fire-1234.fly.dev",
+  "ssh_public_keys": {...}
 }
 
-// OAuth callback handler in container
-app.get('/auth/github/callback', async (req, res) => {
-  const { code } = req.query;
-  
-  // Exchange code for access token
-  const tokenResponse = await exchangeCodeForToken(code);
-  const { access_token } = tokenResponse;
-  
-  // Get user info
-  const userResponse = await fetch('https://api.github.com/user', {
-    headers: { 'Authorization': `token ${access_token}` }
-  });
-  const user = await userResponse.json();
-  
-  // Validate organization membership
-  const isMember = await validateGitHubOrgMembership(access_token, user.login);
-  if (!isMember) {
-    return res.status(403).send(`Access denied. Must be member of ${process.env.GITHUB_ORG_NAME} organization.`);
-  }
-  
-  // Set session cookie
-  req.session.user = user;
-  req.session.githubToken = access_token;
-  res.redirect('/'); // Redirect to workspace
-});
-```
-
-### Bearer Token Generation (CLI Pattern)
-```javascript
-// CLI generates workspace bearer token
-function generateWorkspaceToken(workspaceId, userId) {
-  const payload = {
-    workspace: workspaceId,
-    user: userId,
-    type: 'workspace',
-    created: Date.now(),
-    expires: Date.now() + (7 * 24 * 60 * 60 * 1000) // 7 days
-  };
-  return jwt.sign(payload, process.env.WORKSPACE_SECRET);
-}
-
-// Container validates bearer token
-function validateBearerToken(token) {
-  try {
-    const payload = jwt.verify(token, process.env.WORKSPACE_SECRET);
-    if (payload.expires < Date.now()) throw new Error('Token expired');
-    return payload;
-  } catch (error) {
-    return null;
-  }
+Response (Success):
+{
+  "status": "registered",
+  "container_id": "bold-fire-1234",
+  "owner": "user-123",
+  "registered_at": "2025-08-11T04:13:07Z"
 }
 ```
 
-## Authentication Security Strategy
+### Database Schema
 
-**Multi-Layer Security:**
+**Users Table:**
+```sql
+users (
+  id VARCHAR PRIMARY KEY,           -- "user-123"
+  email VARCHAR UNIQUE NOT NULL,    -- "user@example.com" 
+  github_id INT UNIQUE,             -- OAuth provider ID
+  name VARCHAR,                     -- "John Doe"
+  created_at TIMESTAMP,
+  last_login TIMESTAMP
+)
+```
+
+**Containers Table:**
+```sql
+containers (
+  id VARCHAR PRIMARY KEY,           -- "bold-fire-1234" 
+  account_id VARCHAR NOT NULL,      -- References users.id
+  container_url VARCHAR NOT NULL,   -- "https://bold-fire-1234.fly.dev"
+  status VARCHAR DEFAULT 'active',  -- active, stopped, error
+  ssh_user_key TEXT,               -- User's SSH public key
+  ssh_saas_key TEXT,               -- SaaS service SSH public key  
+  created_at TIMESTAMP,
+  last_heartbeat TIMESTAMP,        -- Health monitoring
+  FOREIGN KEY (account_id) REFERENCES users(id)
+)
+```
+
+### User Ownership Determination
+
+**How we know which user owns a container:**
+1. **Account ID Injection**: CLI injects `USER_ACCOUNT_ID` during container creation
+2. **Authenticated Registration**: Container uses service JWT to prove legitimacy  
+3. **Database Link**: Registration API creates `containers` record linking container ID to user account
+4. **Verification**: SaaS validates account ID exists and container URL is reachable
+
+**Security Measures:**
+- Service JWT prevents spoofed registrations (only real containers can generate valid JWTs)
+- Account ID must exist in users table (prevents registration to non-existent accounts)
+- Container URL must be publicly accessible (prevents registration of fake containers)
+- Rate limiting prevents abuse (10 registrations/minute per container)
+
+### Background SaaS Operations
+
+**Health Monitoring:**
+```bash
+# Cron job every 5 minutes
+for container in $(get_all_containers); do
+  # Use SaaS service JWT to check container health
+  curl -H "Authorization: Bearer $SAAS_SERVICE_JWT" \
+       "$container_url/api/health" || mark_container_unhealthy "$container"
+done
+```
+
+**Automated Backups:**
+- Daily S3 backups for all registered containers using service JWTs
+- Conversation history, file snapshots, and workspace metadata
+- User can access backups via SaaS web dashboard
+
+**Resource Monitoring:**
+- Track container CPU/memory usage for billing
+- Monitor storage usage across workspace volumes
+- Generate usage reports for user dashboard
+
+### API Endpoints
+
+**Core SaaS APIs:**
+```
+Authentication: OAuth 2.0 (GitHub/Google) for web UI
+                Service JWTs for container operations
+
+POST   /api/auth/login              # OAuth login flow
+GET    /api/auth/user               # Get current user info  
+POST   /api/auth/logout             # Clear session
+
+POST   /api/containers/register     # Container self-registration
+GET    /api/containers              # List user's containers
+GET    /api/containers/{id}         # Get container details
+DELETE /api/containers/{id}         # Unregister container
+
+GET    /api/backups                 # List user's backups
+POST   /api/backups/{container_id}  # Trigger manual backup
+```
+
+**Why Container Self-Registration Works:**
+- ✅ **Authoritative**: Container startup is the definitive event
+- ✅ **Reliable**: Works even if CLI crashes after container creation  
+- ✅ **Secure**: Service JWT prevents unauthorized registrations
+- ✅ **Simple**: No complex orchestration between CLI and SaaS needed
+- ✅ **Standard**: Same pattern as AWS Auto Scaling, Kubernetes service discovery
+
+## Unified Web UI Experience (Like GitHub Codespaces Dashboard)
+
+**Local Web UI (`claude-vm web`) - Shows All Containers:**
+Unified dashboard showing both local-only and SaaS-managed containers with categorized workspaces (local_only, saas_managed, saas_only, unified view).
+
+**SaaS Web UI (claude-vm.com) - Team Collaboration:**
+Team-focused dashboard with role-based access showing owned, collaborating, team, and recent workspaces.
+
+## SSH Keypair Authentication (Unified Approach)
+
+Uses standard SSH keys for both SSH access and JWT authentication - no separate key management needed.
+
+### SSH Key Generation & Management (Following GitHub CLI Pattern)
+
+**Key Detection Priority:**
+```bash
+# CLI automatically detects SSH keys in this order:
+claude-vm workspace up .
+
+# 1. User-configured key (explicit choice)
+claude-vm config get ssh-key  # → ~/.ssh/my-custom-key (if set)
+
+# 2. SSH agent keys (passwordless convenience)
+ssh-add -l  # → Use first available agent key if found
+
+# 3. Standard keys in priority order  
+test -f ~/.ssh/id_ed25519     # Modern default (preferred)
+test -f ~/.ssh/id_rsa         # Traditional default
+test -f ~/.ssh/id_ecdsa       # Alternative
+
+# 4. Generate new key with user consent (if none found)
+```
+
+**First-Time SSH Key Setup:**
+```bash
+claude-vm workspace up .
+
+# If no SSH key found, prompts user:
+┌─ SSH Key Setup Required ────────────────────────────────────────┐
+│ No SSH key found for claude-vm authentication.                  │
+│                                                                  │
+│ Options:                                                         │
+│ 1) Generate new SSH key (recommended)                           │
+│ 2) Use existing SSH key                                         │
+│ 3) Specify custom SSH key path                                  │
+│                                                                  │
+│ Select [1-3]: 1                                                 │
+└──────────────────────────────────────────────────────────────────┘
+
+❯ Generating new Ed25519 SSH key...
+❯ Saved to ~/.ssh/claude-vm_ed25519
+❯ Added to SSH agent  
+✓ SSH key ready for claude-vm workspaces
+```
+
+**SSH Key Generation Process:**
+```bash
+# Generates Ed25519 key (modern, secure, fast)
+ssh-keygen -t ed25519 \
+  -f ~/.ssh/claude-vm_ed25519 \
+  -C "claude-vm-$(whoami)@$(hostname)" \
+  -N ""  # No passphrase for automation
+
+# Sets proper permissions
+chmod 600 ~/.ssh/claude-vm_ed25519
+chmod 644 ~/.ssh/claude-vm_ed25519.pub
+
+# Adds to SSH agent if available
+ssh-add ~/.ssh/claude-vm_ed25519
+
+# Updates claude-vm config
+claude-vm config set ssh-key ~/.ssh/claude-vm_ed25519
+```
+
+### SSH Key Management Commands:
+```bash
+# Show current SSH key status (like gh auth status)
+claude-vm auth status
+# Output: SSH Key: ~/.ssh/claude-vm_ed25519 (Ed25519, 256-bit)
+#         SSH Agent: Key loaded, 1 identity
+
+# List available SSH keys (like gh auth keys) 
+claude-vm auth keys
+# Output: 
+# ~/.ssh/claude-vm_ed25519 (Ed25519) [current] [auto-generated]
+# ~/.ssh/id_rsa (RSA 4096-bit)
+# ~/.ssh/work_key (RSA 2048-bit)
+
+# Switch to different SSH key
+claude-vm auth use-key ~/.ssh/id_rsa
+# Output: Updated SSH key to ~/.ssh/id_rsa
+
+# Generate new SSH key (explicit command)
+claude-vm auth generate-key  
+# Output: Generated new Ed25519 key: ~/.ssh/claude-vm_ed25519_2
+
+# Use SSH agent for signing (passwordless)
+ssh-add ~/.ssh/claude-vm_ed25519
+claude-vm chat "fix-bug"  # Uses SSH agent automatically
+```
+
+### User Experience Examples:
+
+**Scenario 1: New User (No Existing SSH Keys)**
+```bash
+claude-vm workspace up .
+# → Auto-detects no SSH keys exist
+# → Prompts user to generate new key  
+# → Generates ~/.ssh/claude-vm_ed25519
+# → Adds to SSH agent
+# → Stores in config, proceeds with workspace creation
+```
+
+**Scenario 2: Developer with Existing SSH Keys**
+```bash
+claude-vm workspace up .
+# → Detects existing ~/.ssh/id_ed25519
+
+┌─ SSH Key Detected ──────────────────────────────────────────────┐
+│ Found SSH key: ~/.ssh/id_ed25519 (Ed25519)                     │
+│                                                                  │  
+│ Use this key for claude-vm? [Y/n]: y                           │
+└──────────────────────────────────────────────────────────────────┘
+
+✓ Using existing SSH key: ~/.ssh/id_ed25519
+❯ Proceeding with workspace creation...
+```
+
+**Scenario 3: SSH Agent Integration**
+```bash
+# User has SSH agent with loaded keys
+ssh-add ~/.ssh/work_key
+
+claude-vm workspace up .
+# → Auto-detects SSH agent
+# → Uses first available agent key 
+# → No file I/O needed for signing (uses agent)
+```
+
+**Why Ed25519 Keys (Industry Standard):**
+- **Modern**: Recommended by security experts and GitHub
+- **Fast**: Much faster signing than RSA (important for frequent JWT generation)
+- **Small**: 68-character public keys vs 800+ for RSA
+- **Secure**: Resistant to timing attacks and quantum-resistant precursor
+
+**Configuration Storage:**
 ```yaml
-Layer 1 - User Authentication:
-  GitHub OAuth: Primary authentication method
-  Organization Membership: Access control mechanism  
-  Session Management: Secure cookies with CSRF protection
-  
-Layer 2 - Workspace Access:
-  Bearer Tokens: Unique per workspace, limited lifetime
-  Token Rotation: Regular refresh for long-running workspaces
-  Scope Limitation: Tokens only valid for specific workspace
-  
-Layer 3 - Container Security:
-  Environment Isolation: Separate containers per workspace
-  Network Segmentation: Containers cannot access each other
-  Resource Limits: CPU/memory limits per container
-  
-Layer 4 - Data Security:  
-  S3 Encryption: All backups encrypted at rest
-  Pre-signed URLs: Time-limited, scope-limited S3 access
-  GitHub Token Security: Minimal scope, secure storage
+# ~/.claude-vm/config.yaml (user preferences only)
+defaults:
+  cloud: "docker"
+  agent: "claude"
+  auto_stop_minutes: 60
+
+# Only configured clouds with non-default settings
+clouds:
+  fly:
+    region: "lax"
+
+# Only configured agents with non-default settings  
+agents:
+  claude:
+    model: "opus"
 ```
 
-**Benefits of GitHub Organization Authentication:**
-- ✅ **Unified Identity**: Same GitHub identity across all access patterns
-- ✅ **Organization Control**: Companies can manage workspace access via GitHub teams
-- ✅ **Granular Permissions**: Different organization roles can have different workspace permissions  
-- ✅ **Audit Trail**: GitHub provides comprehensive audit logs for authentication events
-- ✅ **Developer Familiar**: All developers already have GitHub accounts and understand org membership
-- ✅ **Zero Additional Setup**: No separate user management system needed
-- ✅ **Enterprise Ready**: Integrates with GitHub Enterprise and SAML/SSO
+**~/.claude-vm/workspaces.yaml (workspace registry):**
+```yaml
+version: "1.0"
+
+workspaces:
+  bold-fire-1234:
+    name: "bold-fire-1234"
+    status: "running"
+    provider: "fly"
+    url: "https://bold-fire-1234.fly.dev"
+    ssh_key: "~/.ssh/claude-vm_ed25519"
+    saas_managed: false
+    created: "2025-08-11T04:13:07Z"
+```
+
+### SSH Key Management Commands:
+```bash
+# Show current SSH key status
+claude-vm auth status
+# Output: SSH Key: ~/.ssh/id_rsa (RSA 4096-bit), SSH Agent: 1 key loaded
+
+# List available SSH keys
+claude-vm auth keys  
+# Output: ~/.ssh/id_rsa (RSA 4096-bit) [current], ~/.ssh/id_ed25519 (ED25519)
+
+# Use specific SSH key for new workspaces
+claude-vm auth use-key ~/.ssh/id_ed25519
+
+# Generate SSH key if none exists  
+claude-vm auth generate-key
+# Runs: ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
+
+# Update existing workspace SSH key
+claude-vm workspace update bold-fire-1234 --ssh-key ~/.ssh/new_key.pub
+```
+
+### SSH Agent Integration:
+```bash
+# Load key into SSH agent for automatic signing
+ssh-add ~/.ssh/id_rsa
+
+# All claude-vm operations use SSH agent automatically
+claude-vm chat "fix-bug"                   # Gets private key from SSH agent
+ssh user@bold-fire-1234.fly.dev          # Uses same key for SSH access
+```
+
+## SSH-Based Authentication Flow
+
+### Container SSH Key Configuration:
+```yaml
+# Container receives single SSH public key for both purposes
+SSH_PUBLIC_KEY: "ssh-rsa AAAAB3NzaC1yc2EAAAA... user@machine"
+WORKSPACE_ID: "bold-fire-1234"
+USER_ID: "user123"
+```
+
+### Container Setup (Unified):
+```bash
+#!/bin/bash
+# Container startup script - single key serves both purposes
+
+# 1. SSH access setup  
+mkdir -p ~/.ssh
+echo "$SSH_PUBLIC_KEY" > ~/.ssh/authorized_keys
+chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
+service ssh start
+
+# 2. API server JWT validation (same key)
+export JWT_PUBLIC_KEY="$SSH_PUBLIC_KEY" 
+node /workspace/api-server.js
+```
+
+### JWT Generation (CLI Side):
+CLI signs JWTs with SSH private key using RS256 algorithm. JWT payload structure:
+
+```yaml
+# JWT Payload (JSON format when encoded)
+workspace: "workspaceId"
+user: "userId"
+exp: 1691756787
+iat: 1691753187
+```
+
+**CLI Commands for JWT Generation:**
+```bash
+# Generate JWT for specific workspace
+claude-vm workspace token bold-fire-1234
+# Output: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ3b3Jrc3BhY2UiOiJib2xkLWZpcmUtMTIzNCIsInVzZXIiOiJ1c2VyLTEyMyIsImV4cCI6MTY5MTc1Njc4NywiaWF0IjoxNjkxNzUzMTg3fQ...
+
+# Copy token to clipboard (like gh auth token | pbcopy) 
+claude-vm workspace token bold-fire-1234 | pbcopy
+
+# Show current workspace registry (for self-hosted web UI setup)
+claude-vm workspace list --json
+# Output: {"bold-fire-1234": {"url": "https://bold-fire-1234.fly.dev", "saas_managed": true}}
+```
+
+**Direct Container Web Access Flow:**
+```bash
+# User gets JWT for specific container
+claude-vm workspace token bold-fire-1234
+
+# User visits container URL: https://bold-fire-1234.fly.dev  
+# Container shows simple login form: "Paste your JWT token"
+# User pastes token and gets full web UI access
+```
+
+SSH Agent integration provides passwordless signing when keys are loaded in agent.
+
+### JWT Validation (Container Side):
+Container validates JWTs with SSH public key from environment variables, verifying workspace ID matches and using RS256 algorithm with 60-second clock tolerance. Express middleware handles Bearer token extraction and validation.
+
+
+## Complete Authentication Matrix
+
+| Access Method | Authentication | Key Used | User Experience |
+|---------------|----------------|----------|------------------|
+| **Local CLI/Web Patterns** | | | |
+| `claude-vm chat "fix-bug"` | JWT signed with user SSH key | `~/.ssh/id_rsa` | Automatic (no login) |
+| `claude-vm web` | JWT signed with user SSH key | `~/.ssh/id_rsa` | Automatic (reads config) |
+| `ssh user@container.host` | SSH public key authentication | `~/.ssh/id_rsa` | Standard SSH |
+| Direct container web visit | JWT (paste token from CLI) | `~/.ssh/id_rsa` | Simple token form |
+| **Hybrid SaaS Patterns (Industry Standard)** | | | |
+| SaaS web dashboard (claude-vm.com) | GitHub/Google OAuth → Service JWT | SaaS SSH key | OAuth login, unified dashboard |
+| SaaS background operations | Service JWT signed with SaaS SSH key | SaaS SSH key | Automatic (health, backups) |
+| Local web UI (`claude-vm web`) | SSH-signed JWT | User's SSH key | Shows local + SaaS containers |
+| **Container Access (Local or SaaS-created)** | | | |
+| CLI to any container | JWT signed with user SSH key | User's `~/.ssh/id_rsa` | Always works (user key always injected) |
+| SSH to any container | SSH public key authentication | User's `~/.ssh/id_rsa` | Standard SSH access |
+| **SaaS Login Commands** | | | |
+| `claude-vm login` | OAuth flow, stores account ID locally | N/A | Enables SaaS for new containers |
+| `claude-vm logout` | Clears login state | N/A | Disables SaaS for new containers |
+
+**Simplified Login-Based Flow Examples:**
+
+### Scenario 1: Privacy-First Developer (Local-Only)
+```bash
+# No login required - works locally by default
+claude-vm workspace up .              # Creates local-only container
+claude-vm chat "fix-bug"              # CLI access  
+claude-vm web                         # Local web UI access
+ssh user@workspace.host               # Direct SSH access
+
+# Container has only user's SSH key
+# No SaaS integration or account tracking
+```
+
+### Scenario 2: SaaS-Integrated Developer  
+```bash
+# Login once to enable SaaS integration
+claude-vm login
+# → OAuth with claude-vm.com, stores account ID
+
+claude-vm workspace up .              # Creates SaaS-integrated container
+# → Automatically injects user + SaaS service keys + account ID
+# → Container self-registers with SaaS service
+# → Visible in both local CLI and claude-vm.com dashboard
+
+claude-vm chat "fix-bug"              # CLI access (same as before)
+ssh user@workspace.host               # SSH access (same as before)
+# + Now also visible in SaaS web interface for management
+```
+
+### Scenario 3: Mixed Local + SaaS Usage
+```bash
+claude-vm login                       # Enable SaaS integration
+claude-vm workspace up project1      # → SaaS-integrated container
+
+claude-vm logout                      # Disable SaaS for future containers  
+claude-vm workspace up project2      # → Local-only container
+
+# Result:
+# - project1: Visible in local CLI + SaaS dashboard 
+# - project2: Only visible in local CLI
+# - User can access both normally via CLI/SSH
+```
+
+### Scenario 4: SaaS Dashboard Management
+```bash
+# User visits claude-vm.com (after logging in via CLI)
+# → See all SaaS-integrated containers
+# → Monitor container status, resource usage
+# → Access containers via web terminal
+# → View conversation history, backups
+
+# CLI still works normally for direct access
+claude-vm workspace list              # Shows local + SaaS containers
+claude-vm chat "review-code"          # Direct CLI access
+```
+
+**SaaS Background Operations (Independent):**
+```bash
+# SaaS manages all registered containers 24/7 using service SSH keys:
+# - Health monitoring and alerts
+# - Scheduled backups to S3
+# - Resource scaling based on usage  
+# - Billing calculations and reporting
+# - Team access control enforcement
+# - All using service JWTs signed with SaaS SSH private key
+```
+
+## Simplified Architecture Validation
+
+This simplified architecture addresses the three core requirements:
+
+1. **User Opt-in/Opt-out Control**: Default privacy-first local-only containers with explicit login-based opt-in to SaaS integration
+2. **Centralized Access Control**: Single user accounts with container ownership via account ID injection 
+3. **Dynamic SSH Key Injection**: Login state determines container configuration (user key only vs user + SaaS service keys)
 
 ## S3 Backup Strategy
 
@@ -1015,7 +2099,7 @@ Always Backup:
   - Git-tracked files with changes (git ls-files + git diff --name-only)
   - Agent deliverables folder: /workspace/deliverables/** (everything)
   - Conversation history: ~/.claude/projects/*/*.jsonl, ~/.goose/sessions/*, etc.
-  - Conversation mappings: /workspace/.claude-vm/conversations.json (only this file)
+  - Conversation mappings: /workspace/.claude-vm/conversations.yaml (only this file)
 
 Never Backup:
   - Build artifacts: node_modules/, dist/, build/, target/, __pycache__/
@@ -1126,72 +2210,25 @@ Backup Timing Strategy:
 
 **Conversation History Backup:**
 ```bash
-# Claude Code conversation handling
-# Problem: Claude creates new .jsonl files when resuming (linked by parentUuid)
-# Solution: Track conversation chains and backup all related files
-
-backup_claude_conversation() {
-  local conversation_name="$1"
-  local workspace_id="$2"
-  
-  # Find current conversation UUID from conversations.json
-  current_uuid=$(jq -r ".conversations[\"$conversation_name\"].conversationId" /workspace/.claude-vm/conversations.json)
-  
-  # Find all related JSONL files by following parentUuid chain
-  local project_dir=$(python3 -c "import urllib.parse; print(urllib.parse.quote('/workspace', safe=''))")
-  local claude_dir="$HOME/.claude/projects/$project_dir"
-  
-  # Upload all files in conversation chain
-  for jsonl_file in "$claude_dir"/*.jsonl; do
-    if grep -q "\"id\":\"$current_uuid\"" "$jsonl_file" 2>/dev/null || \
-       grep -q "\"parentUuid\":\"$current_uuid\"" "$jsonl_file" 2>/dev/null; then
-      aws s3 cp "$jsonl_file" "s3://claude-vm-backups/$user_id/workspaces/$workspace_id/conversations/claude/$conversation_name/"
-    fi
-  done
-  
-  # Create conversation chain metadata
-  create_conversation_chain_metadata "$conversation_name" "$workspace_id"
-}
+# Track conversation chains and backup all related JSONL files
+current_uuid=$(yq -r ".conversations[\"$conversation_name\"].conversationId" /workspace/.claude-vm/conversations.yaml)
+for jsonl_file in "$claude_dir"/*.jsonl; do
+  if grep -q "\"id\":\"$current_uuid\"" "$jsonl_file"; then
+    aws s3 cp "$jsonl_file" "s3://claude-vm-backups/$user_id/workspaces/$workspace_id/conversations/"
+  fi
+done
 ```
 
 **File Selection Implementation:**
 ```bash
-# Simplified file selection for workspace backup
-create_file_snapshot() {
-  local workspace_id="$1"
-  local timestamp="$2"
-  
-  cd /workspace
-  
-  # Always include: git-tracked files with changes
-  git ls-files > /tmp/backup-files.txt
-  git diff --name-only >> /tmp/backup-files.txt        # Unstaged changes
-  git diff --staged --name-only >> /tmp/backup-files.txt  # Staged changes
-  
-  # Add conversation history (all agents)
-  find ~/.claude/projects -name "*.jsonl" -type f >> /tmp/backup-files.txt
-  find ~/.goose/sessions -type f >> /tmp/backup-files.txt
-  find ~/.codex -type f >> /tmp/backup-files.txt 2>/dev/null || true
-  
-  # Add conversation mappings (only this file from .claude-vm)
-  echo ".claude-vm/conversations.json" >> /tmp/backup-files.txt 2>/dev/null || true
-  
-  # Add ALL agent deliverable files (simple folder convention)
-  find deliverables -type f >> /tmp/backup-files.txt 2>/dev/null || true
-  
-  # Remove excluded patterns  
-  grep -v -E "(node_modules|__pycache__|\.cache|build/|dist/|\.log$)" /tmp/backup-files.txt > /tmp/backup-files-filtered.txt
-  
-  # Create tar with file manifest
-  tar -czf "/tmp/workspace-snapshot-$timestamp.tar.gz" --files-from=/tmp/backup-files-filtered.txt
-  
-  # Generate manifest with file sizes and hashes
-  generate_file_manifest /tmp/backup-files-filtered.txt > "/tmp/file-manifest-$timestamp.json"
-  
-  # Upload to S3
-  aws s3 cp "/tmp/workspace-snapshot-$timestamp.tar.gz" "s3://claude-vm-backups/$user_id/workspaces/$workspace_id/file-snapshots/$timestamp/"
-  aws s3 cp "/tmp/file-manifest-$timestamp.json" "s3://claude-vm-backups/$user_id/workspaces/$workspace_id/file-snapshots/$timestamp/"
-}
+# Create comprehensive workspace backup
+git ls-files > /tmp/backup-files.txt
+git diff --name-only >> /tmp/backup-files.txt
+find ~/.claude/projects -name "*.jsonl" >> /tmp/backup-files.txt
+find deliverables -type f >> /tmp/backup-files.txt 2>/dev/null || true
+grep -v -E "(node_modules|__pycache__|build/)" /tmp/backup-files.txt > /tmp/filtered.txt
+tar -czf "workspace-$timestamp.tar.gz" --files-from=/tmp/filtered.txt
+aws s3 cp "workspace-$timestamp.tar.gz" "s3://claude-vm-backups/$user_id/workspaces/"
 ```
 
 ## LLM System Prompt Injection
@@ -1216,11 +2253,13 @@ Persistence Rules:
   - Work files, downloads, temp processing can go anywhere else in /workspace/"
 
 Workspace Behavior Context:
-  "This workspace runs in a remote container that can stop/restart.
-   Your conversation history is preserved, but the filesystem resets except for:
+  "You are running inside a devcontainer on a remote VM with full development capabilities.
+   Your conversation history and all /workspace/ files persist across container restarts:
    - Git repository state (tracked files + changes)
-   - Files you place in /workspace/deliverables/
-   Plan your file organization accordingly."
+   - Files in /workspace/deliverables/
+   - Build caches in /workspace/.cache/
+   - Your state in /workspace/.claude-vm/
+   You can install packages, run docker-compose via Docker-in-Docker, and have access to all development tools."
 ```
 
 **Complete System Prompt Examples:**
@@ -1228,35 +2267,53 @@ Workspace Behavior Context:
 ```yaml
 # Claude Code System Prompt Addition
 CLAUDE_VM_CONTEXT = """
-You are Claude Code running in a claude-vm workspace.
-Environment: DevContainer on DigitalOcean (nyc1)
+You are Claude Code running inside a devcontainer on DigitalOcean infrastructure.
 Workspace: bold-fire-1234
 Project: github.com/user/myproject (branch: main)
 
-IMPORTANT - File Persistence Rules:
-- Git-tracked files with changes are automatically backed up
-- Files in /workspace/deliverables/ are preserved when container stops/restarts  
-- ALL OTHER FILES are temporary and lost on container restart
-- Put final deliverables (reports, generated code, artifacts) in /workspace/deliverables/
-- Temporary downloads, build files, processing data can go anywhere else
+IMPORTANT - You have full development capabilities:
+- You run inside a devcontainer with development tools pre-installed
+- Git repository is at /workspace/repo/ (always persistent)
+- Put final deliverables in /workspace/deliverables/ (always persistent)
+- Build caches persist in /workspace/.cache/ (npm, pip, cargo, etc.)
+- You can install packages: apt install <package>, pip install <package>, npm install <package>
+- You can run docker-compose stacks via Docker-in-Docker for local development
+- Multiple agents may be running in this same container environment
 
-Your conversation history persists across container restarts, but organize your file outputs carefully.
+IMPORTANT - Git and external operations:
+- You have full git access: git add, git commit, git push, git pull, branching, etc.
+- Git credentials (SSH keys/tokens) are securely managed via agent forwarding - you'll never see the actual keys
+- AWS CLI, Docker registry, database connections work normally via credential forwarding/proxying
+- All sensitive credentials (API keys, passwords, certificates) are VM-managed - you never see raw credentials
+- Deliverables backup handled automatically (VM → S3-compatible storage or Container → API server → storage)
+- Use external services normally for development - authentication is handled transparently
+
+All your work persists across container restarts. When user runs 'claude-vm shell', they'll connect to this same environment.
 """
 
 # Goose System Prompt Addition  
 GOOSE_VM_CONTEXT = """
-You are Goose AI running in a claude-vm remote workspace.
-Environment: DevContainer on Fly.io (iad region) 
-Workspace: quiet-lake-5678
+You are Goose AI running inside a devcontainer on Fly.io infrastructure.
+Workspace: quiet-lake-5678  
 Project: github.com/company/backend (branch: feature-auth)
 
-File Organization:
-- Modified git files are backed up automatically
-- /workspace/deliverables/ contents survive container restarts
-- Everything else is ephemeral - plan accordingly
-- Save important results to /workspace/deliverables/ before finishing tasks
+Development Environment:
+- You run inside a devcontainer with development tools available
+- Git repository at /workspace/repo/ persists across restarts
+- Save deliverables to /workspace/deliverables/ (always persistent)
+- Build caches in /workspace/.cache/ persist automatically
+- Install packages: apt install <package>, pip install <package>, etc.
+- Run docker-compose for local services via Docker-in-Docker
+- Multiple agents may share this container environment
 
-This is a persistent coding environment - your session continues across container lifecycle.
+External Operations (Credential Forwarding):
+- You have full git access via secure credential forwarding - use git commands normally
+- AWS CLI, Docker registry, external APIs work via credential helpers - you never see raw credentials
+- All sensitive credentials are VM-managed for security
+- Deliverables backup handled automatically (VM → S3-compatible storage or Container → API server → storage)
+- Focus on development - credential management is handled transparently
+
+This is a persistent development environment - everything in /workspace/ survives restarts.
 """
 
 # Implementation in claude-vm
@@ -1352,7 +2409,7 @@ restore_conversation_history() {
   aws s3 sync "s3://claude-vm-backups/$user_id/workspaces/$workspace_id/conversations/goose/" "$HOME/.goose/sessions/"
   
   # Restore conversation mappings
-  aws s3 cp "s3://claude-vm-backups/$user_id/workspaces/$workspace_id/conversations.json" /workspace/.claude-vm/conversations.json
+  aws s3 cp "s3://claude-vm-backups/$user_id/workspaces/$workspace_id/conversations.yaml" /workspace/.claude-vm/conversations.yaml
 }
 ```
 
@@ -1683,7 +2740,7 @@ We should provide clear guidance and helper commands to make tmux attachment eas
 # Helper script: /workspace/bin/claude-vm-attach
 #!/bin/bash
 echo "Available claude-vm managed conversations:"
-cat ~/.claude-vm/conversations.json | jq -r 'keys[]' 
+cat ~/.claude-vm/conversations.yaml | yq -r 'keys[]' 
 echo ""
 echo "Tmux sessions:"
 tmux list-sessions
@@ -1694,7 +2751,7 @@ echo "To start claude-vm CLI: claude-vm chat --list"
 # SSH login message in ~/.bashrc
 cat >> ~/.bashrc << 'EOF'
 echo "🚀 Claude VM Workspace"
-echo "Active conversations: $(cat ~/.claude-vm/conversations.json 2>/dev/null | jq -r 'keys | length // 0')"
+echo "Active conversations: $(cat ~/.claude-vm/conversations.yaml 2>/dev/null | yq -r 'keys | length // 0')"
 echo ""
 echo "📋 To join a conversation:"
 echo "  tmux list-sessions                    # List all conversations"
@@ -1789,74 +2846,65 @@ tmux send-keys -t "analyze-performance" 'analyze this code' C-m
 **Two-Level Tracking System:**
 
 ### 1. Workspace Registry (Local to User's Machine)
-```json
-// ~/.claude-vm/workspaces.json (on user's local machine)
-{
-  "workspaces": {
-    "bold-fire-1234": {
-      "name": "bold-fire-1234",
-      "status": "running|stopped|error",
-      "provider": "fly.io",
-      "region": "iad",
-      "url": "https://bold-fire-1234.fly.dev",
-      "sshHost": "bold-fire-1234.fly.dev",
-      "agents": ["claude", "goose"],
-      "created": "2025-08-11T04:13:07Z",
-      "lastActivity": "2025-08-11T08:22:11Z",
-      "project": {
-        "repo": "github.com/user/project",
-        "branch": "main",
-        "path": "/workspace"
-      }
-    },
-    "quiet-lake-5678": {
-      "name": "quiet-lake-5678", 
-      "status": "stopped",
-      "provider": "digitalocean",
-      "region": "nyc1",
-      "agents": ["claude"],
-      "created": "2025-08-10T14:22:11Z",
-      "lastActivity": "2025-08-10T16:33:55Z"
-    }
-  }
-}
+```yaml
+# ~/.claude-vm/workspaces.yaml (managed by CLI)
+version: "1.0"
+last_updated: "2025-08-11T08:22:11Z"
+
+workspaces:
+  bold-fire-1234:
+    name: "bold-fire-1234"
+    status: "running"
+    provider: "fly"
+    region: "iad"
+    url: "https://bold-fire-1234.fly.dev"
+    ssh_host: "bold-fire-1234.fly.dev"
+    agents: ["claude", "goose"]
+    created: "2025-08-11T04:13:07Z"
+    last_activity: "2025-08-11T08:22:11Z"
+    project:
+      repo: "github.com/user/project"
+      branch: "main"
+      path: "/workspace"
+      
+  quiet-lake-5678:
+    name: "quiet-lake-5678"
+    status: "stopped"
+    provider: "digitalocean"
+    region: "nyc1"
+    agents: ["claude"]
+    created: "2025-08-10T14:22:11Z"
+    last_activity: "2025-08-10T16:33:55Z"
 ```
 
 ### 2. Conversation Tracking (Per Workspace Container)
-```json
-// /workspace/.claude-vm/conversations.json (inside each workspace container)
-// This is the ONLY container state file we back up
-{
-  "metadata": {
-    "version": "1.0",
-    "lastUpdated": "2025-08-11T08:22:11Z"
-  },
-  "conversations": {
-    "fix-auth-bug": {
-      "agent": "claude",
-      "tmuxSession": "fix-auth-bug",
-      "status": "active",
-      "created": "2025-08-11T04:13:07Z",
-      "lastActivity": "2025-08-11T06:45:22Z",
-      "messageCount": 45,
-      "agentSpecific": {
-        "conversationChain": ["abc123-original", "def456-resumed", "ghi789-current"],
-        "activeUuid": "ghi789-current"
-      }
-    },
-    "refactor-db": {
-      "agent": "goose",
-      "tmuxSession": "refactor-db", 
-      "status": "idle",
-      "created": "2025-08-10T14:22:11Z",
-      "lastActivity": "2025-08-11T08:22:11Z",
-      "messageCount": 12,
-      "agentSpecific": {
-        "sessionId": "goose-session-xyz789"
-      }
-    }
-  }
-}
+```yaml
+# /workspace/.claude-vm/conversations.yaml (inside each workspace container)
+# This is the ONLY container state file we back up
+metadata:
+  version: "1.0"
+  last_updated: "2025-08-11T08:22:11Z"
+
+conversations:
+  fix-auth-bug:
+    agent: "claude"
+    tmux_session: "fix-auth-bug"
+    status: "active"
+    created: "2025-08-11T04:13:07Z"
+    last_activity: "2025-08-11T06:45:22Z"
+    message_count: 45
+    agent_specific:
+      conversation_chain: ["abc123-original", "def456-resumed", "ghi789-current"]
+      active_uuid: "ghi789-current"
+  refactor-db:
+    agent: "goose"
+    tmux_session: "refactor-db"
+    status: "idle"
+    created: "2025-08-10T14:22:11Z"
+    last_activity: "2025-08-11T08:22:11Z"
+    message_count: 12
+    agent_specific:
+      session_id: "goose-session-xyz789"
 ```
 
 **Container State Philosophy:**
@@ -1869,25 +2917,25 @@ tmux send-keys -t "analyze-performance" 'analyze this code' C-m
 
 ```bash
 # User runs: claude-vm chat "fix-auth-bug"
-# 1. Local CLI reads ~/.claude-vm/workspaces.json to find current workspace
-# 2. Connects to workspace (SSH/API) and reads /workspace/.claude-vm/conversations.json  
+# 1. Local CLI reads ~/.claude-vm/workspaces.yaml to find current workspace
+# 2. Connects to workspace (SSH/API) and reads /workspace/.claude-vm/conversations.yaml  
 # 3. Finds conversation "fix-auth-bug" → agent "claude", conversationId "abc123..."
 # 4. Attaches to tmux session "fix-auth-bug" or recreates it if needed
 
 # User runs: claude-vm workspace list
-# 1. Local CLI reads ~/.claude-vm/workspaces.json
+# 1. Local CLI reads ~/.claude-vm/workspaces.yaml
 # 2. Shows all workspaces with their status, provider, agents
 
 # User runs: claude-vm chat --list  
 # 1. Local CLI connects to current/selected workspace
-# 2. Reads /workspace/.claude-vm/conversations.json from that workspace
+# 2. Reads /workspace/.claude-vm/conversations.yaml from that workspace
 # 3. Shows conversations specific to that workspace
 ```
 
 **Session Recovery After Container Restart:**
 ```bash
 # Container restart procedure (happens inside workspace):
-# 1. Read /workspace/.claude-vm/conversations.json 
+# 1. Read /workspace/.claude-vm/conversations.yaml 
 # 2. For conversations marked as "active", attempt to resume:
 #    - Claude: recreate tmux session + claude --resume <conversation-id>
 #    - Goose: recreate tmux session + restore from goose session files
@@ -1923,30 +2971,27 @@ Similar to git branches, users can assign memorable names to conversations inste
 **Conversation Naming System:**
 ```bash
 # Name mapping (stored in workspace)
-~/.claude-vm/conversations.json:
-{
-  "fix-auth-bug": {
-    "agent": "claude",
-    "uuidChain": ["abc123-original", "def456-resumed", "ghi789-current"],
-    "activeUuid": "ghi789-current",
-    "created": "2025-08-11T04:13:07Z",
-    "lastMessage": "2025-08-11T06:45:22Z",
-    "messageCount": 45
-  },
-  "refactor-database": {
-    "agent": "goose", 
-    "uuidChain": ["xyz789-original"],
-    "activeUuid": "xyz789-original",
-    "created": "2025-08-10T14:22:11Z",
-    "lastMessage": "2025-08-10T16:33:55Z", 
-    "messageCount": 12
-  }
-}
+~/.claude-vm/conversations.yaml:
+fix-auth-bug:
+  agent: "claude"
+  uuid_chain: ["abc123-original", "def456-resumed", "ghi789-current"]
+  active_uuid: "ghi789-current"
+  created: "2025-08-11T04:13:07Z"
+  last_message: "2025-08-11T06:45:22Z"
+  message_count: 45
+
+refactor-database:
+  agent: "goose"
+  uuid_chain: ["xyz789-original"]
+  active_uuid: "xyz789-original"
+  created: "2025-08-10T14:22:11Z"
+  last_message: "2025-08-10T16:33:55Z"
+  message_count: 12
 ```
 
 **Name Resolution Process:**
 1. User runs `claude-vm chat "fix-auth-bug"`
-2. System looks up name in `conversations.json` 
+2. System looks up name in `conversations.yaml` 
 3. Finds `activeUuid: "ghi789-current"`
 4. Attaches to tmux session for that workspace
 5. Claude Code resumes using `claude --resume ghi789-current`
@@ -2030,61 +3075,12 @@ We'll implement the web interface in **two phases**, each with distinct advantag
 ## Phase 1: Terminal Streaming (xterm.js + pty/tmux)
 
 **Implementation Strategy:**
-```javascript
-// Direct tmux session streaming to browser
-const terminal = new Terminal();
-const socket = new WebSocket('/api/terminal/fix-auth-bug');
-terminal.open(document.getElementById('terminal'));
-
-// Alternative approaches:
-// Option A: tmux → pty → WebSocket → xterm.js
-// Option B: tmux → WebSocket → xterm.js (direct streaming, no pty needed)
-```
-
-**Phase 1 Benefits:**
-- ✅ **Rapid MVP**: Get web UI working in days, not weeks
-- ✅ **100% Feature Parity**: Every Claude Code feature works identically  
-- ✅ **Zero Translation Layer**: No parsing, no data loss, no bugs from interpretation
-- ✅ **Native Experience**: Colors, cursor positioning, keyboard shortcuts, Esc+Esc branching
-- ✅ **Multi-Agent Support**: Works with all agents (Claude, Goose, Codex, etc.)
-- ✅ **Debugging**: Can see exactly what CLI tools are doing
-
-**Phase 1 Limitations:**
-- ❌ **Desktop Only**: Not mobile-friendly (tiny terminal text, no touch)
-- ❌ **No Conversation Management**: Can't easily switch between named conversations
-- ❌ **Limited History**: Can't search/filter past conversations
-- ❌ **Raw Terminal**: No syntax highlighting enhancements, file diff views
+Direct tmux session streaming to browser using xterm.js with WebSocket connections (tmux → pty → WebSocket → xterm.js).
 
 ## Phase 2: Custom Parsed Interface (JSONL + Mobile UI)
 
 **Implementation Strategy:**
-```javascript
-// Parse JSONL files and present custom interface
-const conversationWatcher = watchDirectory('~/.claude/projects/-home-user-project/');
-conversationWatcher.on('new-message', (message) => {
-  if (message.type === 'assistant' && message.message.content) {
-    renderMessage(message, conversationName);
-  }
-});
-
-// Mobile-optimized conversation UI
-fetch('/api/conversations/fix-auth-bug')
-  .then(response => response.json())
-  .then(conversation => renderMobileConversation(conversation));
-```
-
-**Phase 2 Benefits:**
-- ✅ **Mobile First**: Touch-friendly interface, readable on phones
-- ✅ **Rich Conversation Management**: Named conversations, search, filtering, history
-- ✅ **Enhanced Presentation**: Syntax highlighting, file diffs, tool call summaries
-- ✅ **Cross-Device Sync**: Start on mobile, continue on desktop terminal
-- ✅ **Offline Capable**: PWA with cached conversation history
-- ✅ **Team Features**: Share conversation links, comment on specific messages
-
-**Phase 2 Limitations:**
-- ❌ **Development Complexity**: Weeks/months to implement full feature parity
-- ❌ **Parsing Bugs**: Risk of misinterpreting terminal output during format changes
-- ❌ **Feature Lag**: New agent features may not work until we update parsers
+Parse JSONL files and present custom mobile-optimized interface with directory watching for new messages and conversation management APIs.
 
 ## Hybrid Implementation Plan
 
